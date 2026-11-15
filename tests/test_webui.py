@@ -396,6 +396,76 @@ async def test_remove_from_queue(app_bundle):
     assert [item["title"] for item in world.player.queue._queue] == ["B"]
 
 
+async def test_the_panel_can_be_installed_as_an_app(app_bundle):
+    """Manifest, service worker and icons: what browsers require to install it."""
+    manifest = await app_bundle.client.get("/manifest.webmanifest")
+    assert manifest.status == 200
+    assert "manifest" in manifest.headers["Content-Type"]
+    payload = await manifest.json()
+    assert payload["start_url"] == "/"
+    assert payload["display"] == "standalone"
+    assert {icon["sizes"] for icon in payload["icons"]} >= {"192x192", "512x512"}
+
+    worker = await app_bundle.client.get("/sw.js")
+    assert worker.status == 200
+    assert worker.headers["Service-Worker-Allowed"] == "/"
+    assert worker.headers["Cache-Control"] == "no-cache"
+    body = await worker.text()
+    assert "addEventListener(\"fetch\"" in body
+    assert "/api" in body  # API calls are never cached
+
+    for icon in ("icon-192.png", "icon-512.png", "icon-maskable-512.png"):
+        response = await app_bundle.client.get(f"/static/{icon}")
+        assert response.status == 200
+        assert response.headers["Content-Type"] == "image/png"
+
+
+async def test_theme_boot_script_is_served_before_the_app(app_bundle):
+    page = await app_bundle.client.get("/")
+    html = await page.text()
+    assert '/static/theme.js' in html
+    assert html.index("/static/theme.js") < html.index("/static/app.js")
+    assert 'rel="manifest"' in html
+
+    script = await app_bundle.client.get("/static/theme.js")
+    assert script.status == 200
+    body = await script.text()
+    assert "playify.theme" in body
+    assert "prefers-color-scheme" in body
+
+
+async def test_move_reorders_the_queue(app_bundle):
+    world = app_bundle.world
+    for title in ("A", "B", "C"):
+        world.player.queue.put_nowait({"title": title, "url": title.lower()})
+
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "move", "data": {"from": 2, "to": 0}},
+        headers=auth_headers(app_bundle.ctx),
+    )
+
+    assert response.status == 200
+    assert [item["title"] for item in world.player.queue._queue] == ["C", "A", "B"]
+    payload = await response.json()
+    assert "position 1" in payload["message"]
+
+
+async def test_move_rejects_positions_that_do_not_exist(app_bundle):
+    world = app_bundle.world
+    world.player.queue.put_nowait({"title": "A", "url": "a"})
+    server._rate_limits.clear()
+
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "move", "data": {"from": 0, "to": 4}},
+        headers=auth_headers(app_bundle.ctx),
+    )
+
+    assert response.status == 409
+    assert [item["title"] for item in world.player.queue._queue] == ["A"]
+
+
 async def test_server_settings_require_the_manage_server_permission(app_bundle, monkeypatch):
     world = app_bundle.world
 

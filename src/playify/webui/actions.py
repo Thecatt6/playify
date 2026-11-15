@@ -1019,6 +1019,34 @@ async def action_remove(ctx: Any, session: Any, data: dict[str, Any]) -> dict[st
     return {"ok": True, "message": f"Removed “{title}”"}
 
 
+async def action_move(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Move a queued track to another position (drag and drop in the Web UI)."""
+    player = _player(session.guild_id)
+    try:
+        source = int(data.get("from"))
+        target = int(data.get("to"))
+    except (TypeError, ValueError):
+        raise ActionError("Invalid queue positions.") from None
+
+    items = list(player.queue._queue)
+    if not 0 <= source < len(items) or not 0 <= target < len(items):
+        raise ActionError("The queue changed in the meantime, try again.", status=409)
+    if source == target:
+        return {"ok": True, "message": ""}
+
+    moved = items.pop(source)
+    items.insert(target, moved)
+
+    new_queue: asyncio.Queue = asyncio.Queue()
+    for item in items:
+        await new_queue.put(item)
+    player.queue = new_queue
+    _refresh_controller(ctx, session.guild_id)
+
+    title = (track_payload(moved) or {}).get("title", "track")
+    return {"ok": True, "message": f"Moved “{title}” to position {target + 1}"}
+
+
 async def action_clear_queue(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str, Any]:
     player = _player(session.guild_id)
     while not player.queue.empty():
@@ -1122,6 +1150,7 @@ _HANDLERS: dict[str, Callable[..., Any]] = {
     "filter": action_filter,
     "mode24_7": action_mode_247,
     "remove": action_remove,
+    "move": action_move,
     "clear_queue": action_clear_queue,
     "jump": action_jump,
     "reconnect": action_reconnect,

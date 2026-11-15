@@ -16,6 +16,17 @@ It is **locked down by design**: the only way in is a Discord login, and the bot
 * Server settings for managers (`Manage Server`): default volume and kawaii mode, saved to the database like the slash commands do.
 * Listener avatars, connection health and a `Reconnect` action for a laggy voice connection. If the bot's voice client dies while Discord still shows it in the channel, a red banner explains it and the bot repairs the connection by itself within ~25 seconds.
 * Every change is mirrored to the Discord controller message, so both stay in sync.
+* **Drag a track in the queue** to move it: the drop target lights up, and the new order is saved
+  server-side (`move` action) just like removing or jumping.
+* **Keyboard**: <kbd>Space</kbd> play/pause, <kbd>←</kbd>/<kbd>→</kbd> previous/next,
+  <kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd> seek ±5 s, <kbd>M</kbd> mute/unmute, <kbd>/</kbd>
+  search, <kbd>?</kbd> for the full list, <kbd>Esc</kbd> to close panels.
+* **Dark and light theme**, remembered per browser and following the system preference until you
+  pick one with the toggle in the top bar (`/static/theme.js` applies it before the first paint, so
+  there is no white flash).
+* **Installable as an app**: the panel ships a web manifest and a service worker, so *Add to home
+  screen* gives a standalone window on desktop and phone. The worker is network-first: after a
+  deploy, a reload shows the new interface instead of a stale cached one.
 
 :::tip
 There are two ways to open it: the **🌐 Web UI** button on the player controller (it appears automatically next to *Lyrics / Karaoke / Show Queue / Jump to…* once the interface is running), or the `/webui` slash command, which replies privately with the link.

@@ -791,6 +791,26 @@ def create_app(ctx: WebUIContext) -> web.Application:
         return web.FileResponse(STATIC_DIR / "favicon.svg")
 
     app.router.add_get("/favicon.ico", handle_favicon)
+
+    async def handle_manifest(_request: web.Request) -> web.Response:
+        return web.FileResponse(
+            STATIC_DIR / "manifest.webmanifest",
+            headers={"Content-Type": "application/manifest+json"},
+        )
+
+    async def handle_service_worker(_request: web.Request) -> web.Response:
+        # The worker must stay at the origin root to control the whole panel.
+        return web.FileResponse(
+            STATIC_DIR / "sw.js",
+            headers={
+                "Content-Type": "text/javascript",
+                "Service-Worker-Allowed": "/",
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    app.router.add_get("/manifest.webmanifest", handle_manifest)
+    app.router.add_get("/sw.js", handle_service_worker)
     app.router.add_static("/static/", STATIC_DIR, show_index=False, append_version=False)
 
     async def _cleanup(app: web.Application) -> None:

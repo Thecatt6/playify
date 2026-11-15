@@ -57,6 +57,8 @@
     pollTimer: null,
     lastRecovery: 0,
     lastQueueKey: "",
+    dragFrom: null,
+    lastVolume: 70,
   };
 
   /* ------------------------------------------------------------ formatting */
@@ -556,6 +558,53 @@
     $("filterSummary").textContent = active.length ? active.join(", ") : "";
   };
 
+  const clearDropTargets = () => {
+    document
+      .querySelectorAll(".queue-item.is-drop-target")
+      .forEach((node) => node.classList.remove("is-drop-target"));
+  };
+
+  const attachDragHandlers = (row, index) => {
+    row.addEventListener("dragstart", (event) => {
+      app.dragFrom = index;
+      row.classList.add("is-dragging");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        try {
+          event.dataTransfer.setData("text/plain", String(index));
+        } catch (_) {
+          /* some browsers refuse (private mode); the closure carries the index */
+        }
+      }
+    });
+
+    row.addEventListener("dragend", () => {
+      app.dragFrom = null;
+      row.classList.remove("is-dragging");
+      clearDropTargets();
+    });
+
+    row.addEventListener("dragover", (event) => {
+      if (app.dragFrom === null || app.dragFrom === index) return;
+      event.preventDefault();
+      clearDropTargets();
+      row.classList.add("is-drop-target");
+    });
+
+    row.addEventListener("dragleave", () => row.classList.remove("is-drop-target"));
+
+    row.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      const from =
+        app.dragFrom ?? Number(event.dataTransfer && event.dataTransfer.getData("text/plain"));
+      clearDropTargets();
+      row.classList.remove("is-drop-target");
+      app.dragFrom = null;
+      if (!Number.isInteger(from) || from === index || from < 0) return;
+      await run("move", { from, to: index }, { silent: true });
+    });
+  };
+
   const renderQueue = (queue) => {
     const list = $("queueList");
     const items = queue.items || [];
@@ -584,10 +633,9 @@
 
       const metaParts = [item.artist, item.platform].filter(Boolean);
 
-      list.append(
-        el(
-          "li",
-          { class: "queue-item", dataset: { index: String(item.index) } },
+      const row = el(
+        "li",
+        { class: "queue-item", draggable: "true", dataset: { index: String(item.index) } },
           el("span", { class: "queue-index", text: String(item.index + 1) }),
           art,
           el(
@@ -620,8 +668,9 @@
               html: svg("x"),
             })
           )
-        )
-      );
+        );
+      attachDragHandlers(row, item.index);
+      list.append(row);
     }
 
     if (items.length > visible.length) {
@@ -849,6 +898,72 @@
     setFill(seek, app.duration ? value / app.duration : 0);
   };
 
+  /* ------------------------------------------------------------ chrome --- */
+
+  const THEME_META = { dark: "#0a0b10", light: "#f4f5f9" };
+
+  const currentTheme = () =>
+    document.documentElement.dataset.theme === "light" ? "light" : "dark";
+
+  const applyTheme = (theme) => {
+    const next = theme === "light" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    const icon = $("themeIcon") && $("themeIcon").querySelector("use");
+    if (icon) icon.setAttribute("href", next === "light" ? "#i-sun" : "#i-moon");
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", THEME_META[next]);
+    try {
+      localStorage.setItem("playify.theme", next);
+    } catch (_) {
+      /* private mode */
+    }
+  };
+
+  const toggleTheme = () => applyTheme(currentTheme() === "light" ? "dark" : "light");
+
+  const shortcutsOpen = () => !$("shortcuts").hidden;
+
+  const setShortcuts = (open) => {
+    $("shortcuts").hidden = !open;
+    if (open) {
+      const close = $("shortcutsClose");
+      if (close) close.focus();
+    }
+  };
+
+  const toggleMute = async () => {
+    const settings = (app.snapshot && app.snapshot.settings) || {};
+    const level = Number(settings.volume ?? 100);
+    if (level >= 2) {
+      app.lastVolume = level;
+      await run("volume", { volume: 0 });
+    } else {
+      await run("volume", { volume: app.lastVolume || 70 });
+    }
+  };
+
+  const seekBy = (delta) => {
+    if (!app.snapshot || !app.duration) return;
+    if ((app.snapshot.playback || {}).is_live) return;
+    const target = Math.max(0, Math.min(app.duration - 1, app.pos + delta));
+    app.pos = target;
+    app.posAt = performance.now();
+    const seek = $("seek");
+    seek.value = String(Math.round(target));
+    $("pos").textContent = fmtTime(target);
+    setFill(seek, app.duration ? target / app.duration : 0);
+    run("seek", { position: Math.round(target) }, { silent: true });
+  };
+
+  const registerServiceWorker = () => {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      /* offline shell is a bonus: the panel works without it */
+    });
+  };
+
+  /* -------------------------------------------------------------- events --- */
+
   const setupEvents = () => {
     $("playerCard").addEventListener("click", onControlClick);
     $("queue").addEventListener("click", onQueueClick);
@@ -912,6 +1027,13 @@
     });
 
     $("reconnect").addEventListener("click", () => run("reconnect", {}, { button: $("reconnect") }));
+
+    $("themeToggle").addEventListener("click", toggleTheme);
+    $("shortcutsButton").addEventListener("click", () => setShortcuts(!shortcutsOpen()));
+    $("shortcutsClose").addEventListener("click", () => setShortcuts(false));
+    $("shortcuts").addEventListener("click", (event) => {
+      if (event.target === $("shortcuts")) setShortcuts(false);
+    });
 
     $("logout").addEventListener("click", async () => {
       try {
@@ -1001,23 +1123,37 @@
     });
 
     document.addEventListener("keydown", (event) => {
-      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
       if (event.key === "Escape") {
         hideResults();
+        setShortcuts(false);
         return;
       }
-      if (typing) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+      if (typing || !app.snapshot) return;
+
       if (event.key === " " || event.code === "Space") {
-        if (!app.snapshot) return;
         event.preventDefault();
         run("toggle", {}, { silent: true });
+      } else if (event.key === "ArrowRight" && event.shiftKey) {
+        event.preventDefault();
+        seekBy(5);
+      } else if (event.key === "ArrowLeft" && event.shiftKey) {
+        event.preventDefault();
+        seekBy(-5);
       } else if (event.key === "ArrowRight") {
         run("skip", {}, { silent: true });
       } else if (event.key === "ArrowLeft") {
         run("previous", {}, { silent: true });
+      } else if (event.key === "m" || event.key === "M") {
+        event.preventDefault();
+        toggleMute();
       } else if (event.key === "/") {
         event.preventDefault();
         $("searchInput").focus();
+      } else if (event.key === "?") {
+        event.preventDefault();
+        setShortcuts(!shortcutsOpen());
       }
     });
 
@@ -1293,6 +1429,8 @@
   /* ------------------------------------------------------------------ init */
 
   const init = () => {
+    applyTheme(currentTheme());
+    registerServiceWorker();
     setupEvents();
     requestAnimationFrame(tick);
     load();
