@@ -388,6 +388,11 @@ async def test_lyrics_endpoint_returns_synced_lines(app_bundle, monkeypatch):
     assert seen == {"title": "Nightcall", "artist": "Kavinsky"}
 
 
+async def test_lyrics_endpoint_requires_a_session(app_bundle):
+    response = await app_bundle.client.get(f"/api/lyrics?guild_id={GUILD_ID}")
+    assert response.status == 401
+
+
 async def test_lyrics_endpoint_needs_a_playing_track(app_bundle):
     app_bundle.world.player.current_info = None
     response = await app_bundle.client.get(
