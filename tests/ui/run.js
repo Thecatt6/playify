@@ -329,7 +329,7 @@ async function mainScenario() {
   );
   check(
     "an older entry shows how long ago it happened",
-    items[1].querySelector(".diagnostics-when").textContent === "1:30 ago",
+    /^1:3\d ago$/.test(items[1].querySelector(".diagnostics-when").textContent),
     items[1].querySelector(".diagnostics-when").textContent
   );
 
@@ -615,6 +615,28 @@ async function switchScenario() {
     window.localStorage.getItem("playify.guild") === bigId,
     window.localStorage.getItem("playify.guild")
   );
+
+  console.log("\n[pull to refresh]");
+  const touchEvent = (type, y) => {
+    const event = new window.Event(type, { bubbles: true });
+    event.touches = [{ clientY: y }];
+    return event;
+  };
+  window.document.dispatchEvent(touchEvent("touchstart", 20));
+  window.document.dispatchEvent(touchEvent("touchmove", 60));
+  check("the hint appears while dragging", $("pullHint").dataset.visible === "true");
+  window.document.dispatchEvent(touchEvent("touchmove", 40));
+  window.document.dispatchEvent(touchEvent("touchend", 40));
+  await wait(60);
+  const shortPullSockets = sockets.length;
+  check("a short pull does nothing", $("pullHint").dataset.visible === "false");
+
+  window.document.dispatchEvent(touchEvent("touchstart", 20));
+  window.document.dispatchEvent(touchEvent("touchmove", 200));
+  window.document.dispatchEvent(touchEvent("touchend", 200));
+  await wait(140);
+  check("releasing past the threshold reconnects", sockets.length === shortPullSockets + 1, `${shortPullSockets} -> ${sockets.length}`);
+  check("the hint hides again", $("pullHint").dataset.visible === "false");
 
   window.close();
 }

@@ -428,6 +428,33 @@ async def test_the_artwork_proxy_serves_and_caches_images(app_bundle, monkeypatc
     assert calls["n"] == 2  # the handler still asks, the cache lives deeper
 
 
+async def test_metrics_endpoint_is_open_without_a_token(app_bundle):
+    response = await app_bundle.client.get("/metrics")
+    assert response.status == 200
+    assert response.content_type.startswith("text/plain")
+    body = await response.text()
+    assert "playify_uptime_seconds" in body
+    assert body.startswith("# HELP")
+
+
+async def test_metrics_endpoint_hides_guild_ids_behind_a_token(app_bundle, monkeypatch):
+    monkeypatch.setenv("WEBUI_METRICS_TOKEN", "s3cret")
+    denied = await app_bundle.client.get("/metrics")
+    assert denied.status == 401
+
+    allowed = await app_bundle.client.get(
+        "/metrics", headers={"Authorization": "Bearer s3cret"}
+    )
+    assert allowed.status == 200
+
+
+async def test_metrics_never_leaks_names_or_titles(app_bundle):
+    app_bundle.world.player.current_info = {"title": "Very Secret Song", "artist": "Nope"}
+    body = await (await app_bundle.client.get("/metrics")).text()
+    assert "Very Secret Song" not in body
+    assert "Lounge" not in body
+
+
 # ---------------------------------------------------------------------------
 # OAuth
 # ---------------------------------------------------------------------------

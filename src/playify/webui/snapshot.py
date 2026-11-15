@@ -133,6 +133,11 @@ def _sleep_seconds_left(player: Any, now: float) -> int:
     return max(0, int(round(float(deadline) - now)))
 
 
+def playback_state(player: Any, vc: Any) -> str:
+    """Public alias: the metrics endpoint needs the same wording as the panel."""
+    return _playback_state(player, vc)
+
+
 def _playback_state(player: Any, vc: Any) -> str:
     if player is None or vc is None:
         return "idle"

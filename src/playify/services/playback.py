@@ -1,6 +1,7 @@
 """Core playback engine and karaoke sync tasks."""
 
 from ..core import *
+from . import stats
 from .playback_flow import (
     AFTER_DISCONNECTED,
     AFTER_LOOP,
@@ -617,6 +618,8 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
         music_player.voice_client.play(source, after=callback)
 
         music_player.start_time = seek_time
+        if not (is_a_loop or seek_time > 0):
+            stats.inc("tracks_played")
         music_player.playback_started_at = time.time()
         music_player.last_error = None
         logger.info(

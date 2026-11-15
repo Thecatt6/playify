@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,9 @@ from urllib.parse import urlparse
 from aiohttp import WSMsgType, web
 
 from . import actions as actions_module
-from . import lyrics_service, thumbnails
+from . import lyrics_service, metrics, thumbnails
+from . import snapshot as snapshot_module
+from ..services import error_feed, stats
 from .access import (
     connected_channels,
     ensure_member,
@@ -41,6 +44,8 @@ _HEAVY_ACTIONS = {"play"}
 _HEAVY_COOLDOWN = 1.0
 _DEFAULT_COOLDOWN = 0.25
 _rate_limits: dict[tuple[int, str], float] = {}
+# Open websocket connections, for /metrics.
+_ws_connections = 0
 
 CSP = (
     "default-src 'self'; "
@@ -495,6 +500,54 @@ async def handle_search(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "results": results})
 
 
+def _metrics_authorised(request: web.Request) -> bool:
+    """Optional bearer token: set WEBUI_METRICS_TOKEN to require one."""
+    expected = (os.getenv("WEBUI_METRICS_TOKEN") or "").strip()
+    if not expected:
+        return True
+    header = request.headers.get("Authorization", "")
+    return hmac.compare_digest(header, f"Bearer {expected}")
+
+
+async def handle_metrics(request: web.Request) -> web.Response:
+    """Prometheus scrape endpoint (aggregate numbers only)."""
+    ctx: WebUIContext = request.app["ctx"]
+    if not _metrics_authorised(request):
+        raise ApiError(401, "unauthorized", "A metrics token is required.")
+
+    guilds: list[dict[str, Any]] = []
+    for voice_client in getattr(ctx.bot, "voice_clients", None) or []:
+        channel = getattr(voice_client, "channel", None)
+        guild = getattr(channel, "guild", None) if channel is not None else None
+        if guild is None:
+            continue
+        guild_id = int(getattr(guild, "id", 0) or 0)
+        state = _guild_state(guild_id)
+        player = getattr(state, "music_player", None)
+        guilds.append(
+            {
+                "guild_id": str(guild_id),
+                "listeners": len(getattr(channel, "members", None) or []),
+                "queue": player.queue.qsize() if player is not None else 0,
+                "state": snapshot_module.playback_state(player, voice_client),
+            }
+        )
+
+    samples = metrics.collect(
+        bot=ctx.bot,
+        ctx=ctx,
+        ws_connections=_ws_connections,
+        feeding=error_feed.FEED.snapshot(limit=0),
+        stats=stats.snapshot(),
+        guilds=guilds,
+    )
+    return web.Response(
+        text=metrics.render_prometheus(samples),
+        content_type="text/plain",
+        charset="utf-8",
+    )
+
+
 async def handle_lyrics(request: web.Request) -> web.Response:
     """Lyrics for the track that is playing, synced when LRCLIB has them."""
     ctx: WebUIContext = request.app["ctx"]
@@ -671,6 +724,8 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
 
     ws = web.WebSocketResponse(heartbeat=30.0, max_msg_size=256 * 1024)
     await ws.prepare(request)
+    global _ws_connections
+    _ws_connections += 1
     send_lock = asyncio.Lock()
 
     async def send(payload_obj: dict[str, Any]) -> None:
@@ -804,6 +859,7 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
+        _ws_connections = max(0, _ws_connections - 1)
         stop.set()
         for task in tasks:
             task.cancel()
@@ -834,6 +890,7 @@ def create_app(ctx: WebUIContext) -> web.Application:
     app.router.add_get("/api/search", handle_search)
     app.router.add_get("/api/suggest", handle_suggest)
     app.router.add_get("/api/lyrics", handle_lyrics)
+    app.router.add_get("/metrics", handle_metrics)
     app.router.add_get("/thumb", handle_thumb)
     app.router.add_get("/api/diagnostics", handle_diagnostics)
     app.router.add_post("/api/action", handle_action)

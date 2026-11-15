@@ -38,6 +38,10 @@ It is **locked down by design**: the only way in is a Discord login, and the bot
   networks that block them. The proxy only accepts https images from the hosts the music platforms
   actually use, capped at 3 MB and cached for an hour.
 * **Diagnostics for managers**: recent warnings and errors, newest first, in a collapsed section.
+* **Made for phones too**: the layout respects the notch and the home indicator
+  (`viewport-fit=cover` plus `env(safe-area-inset-*)`), the search box scrolls itself above the
+  on-screen keyboard, and pulling down from the top of the page re-reads the state instead of
+  reloading everything.
 
 :::tip
 There are two ways to open it: the **🌐 Web UI** button on the player controller (it appears automatically next to *Lyrics / Karaoke / Show Queue / Jump to…* once the interface is running), or the `/webui` slash command, which replies privately with the link.

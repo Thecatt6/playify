@@ -92,6 +92,34 @@ python tools/freeze_lock.py /tmp/lock-report.json > requirements.lock
 
 `pytest` fails if a direct requirement is missing from the lock, so the two cannot drift apart.
 
+## Metrics for Prometheus
+
+`GET /metrics` publishes aggregate numbers in the Prometheus text format, ready for a
+`scrape_config` entry:
+
+| metric | meaning |
+| --- | --- |
+| `playify_uptime_seconds` | seconds since the process started |
+| `playify_guilds`, `playify_voice_clients` | guilds and voice connections |
+| `playify_webui_connections` | open panel websockets |
+| `playify_tracks_played_total` | tracks started since boot (counter) |
+| `playify_warnings_total`, `playify_errors_total` | same feed as the diagnostics card |
+| `playify_queue_tracks{guild_id}`, `playify_voice_listeners{guild_id}` | per guild |
+| `playify_playback_state{guild_id}` | 0 idle, 1 playing, 2 paused, 3 keepalive, 4 reconnecting |
+
+No track titles, no names, no user ids: only counts. The endpoint is open by default because the
+numbers are harmless; set `WEBUI_METRICS_TOKEN` to require
+`Authorization: Bearer <token>` instead (Prometheus supports `bearer_token` in the scrape config).
+
+```yaml
+scrape_configs:
+  - job_name: playify
+    scheme: https
+    static_configs:
+      - targets: ["server.tail5751af.ts.net:10000"]
+    bearer_token: change-me
+```
+
 ## Continuous integration
 
 Every push and pull request runs two jobs (the definition is in

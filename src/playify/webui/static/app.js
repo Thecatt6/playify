@@ -1378,6 +1378,64 @@
       }
     });
 
+    /* ---------------------------------------------------------- touch niceties */
+
+    // Pull to refresh: only when the page is already at the top, so normal
+    // scrolling is untouched. Refreshing means re-reading the state, not
+    // reloading the page (the websocket is already live).
+    let pullStart = null;
+    let pullArmed = false;
+    const PULL_TRIGGER = 70;
+
+    const onTouchStart = (event) => {
+      if (event.touches.length !== 1) return;
+      const atTop = (window.scrollY || window.pageYOffset || 0) <= 0;
+      pullStart = atTop ? event.touches[0].clientY : null;
+      pullArmed = false;
+    };
+
+    const onTouchMove = (event) => {
+      if (pullStart === null) return;
+      const delta = event.touches[0].clientY - pullStart;
+      const armed = delta > PULL_TRIGGER;
+      $("pullHint").dataset.visible = delta > 12 ? "true" : "false";
+      pullArmed = armed;
+    };
+
+    const onTouchEnd = async () => {
+      const shouldRefresh = pullArmed;
+      pullStart = null;
+      pullArmed = false;
+      $("pullHint").dataset.visible = "false";
+      if (!shouldRefresh) return;
+      stopPolling();
+      app.snapshot = null;
+      app.lastQueueKey = "";
+      if (app.wsWanted) connect();
+      else startPolling();
+    };
+
+    document.addEventListener("touchstart", onTouchStart, { passive: true });
+    document.addEventListener("touchmove", onTouchMove, { passive: true });
+    document.addEventListener("touchend", onTouchEnd, { passive: true });
+
+    // Keep the search box above the on-screen keyboard.
+    const viewport = window.visualViewport;
+    if (viewport) {
+      const syncKeyboard = () => {
+        const shrunk = window.innerHeight - viewport.height > 140;
+        document.body.classList.toggle("keyboard-open", shrunk);
+      };
+      viewport.addEventListener("resize", syncKeyboard);
+      viewport.addEventListener("scroll", syncKeyboard);
+    }
+    document.addEventListener("focusin", (event) => {
+      if (!event.target.closest || !event.target.closest(".search")) return;
+      const scroll = () =>
+        event.target.scrollIntoView({ block: "center", behavior: "smooth" });
+      if (typeof event.target.scrollIntoView === "function") setTimeout(scroll, 220);
+    });
+
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && app.wsWanted && !app.ws) connect();
     });

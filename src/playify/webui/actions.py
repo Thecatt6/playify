@@ -790,8 +790,8 @@ async def _sleep_timer(ctx: Any, session: Any, seconds: float) -> None:
     if not getattr(state, "_24_7_mode", False) and _is_connected(vc):
         try:
             await vc.disconnect()
-        except Exception:
-            pass
+        except Exception as exc:  # the audio is already stopped; log and move on
+            logger.debug("Sleep timer could not disconnect the voice client: %s", exc)
     _refresh_controller(ctx, session.guild_id)
 
 
@@ -880,8 +880,8 @@ async def action_volume(ctx: Any, session: Any, data: dict[str, Any]) -> dict[st
     if volume_attr is not None:
         try:
             source.volume = player.volume
-        except Exception:  # pragma: no cover - defensive
-            pass
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not apply the volume to the source: %s", exc)
 
     _refresh_controller(ctx, session.guild_id)
     return {"ok": True, "message": f"Volume set to {level}%"}
@@ -1046,8 +1046,8 @@ async def action_default_volume(ctx: Any, session: Any, data: dict[str, Any]) ->
     if getattr(source, "volume", None) is not None:
         try:
             source.volume = state.default_volume
-        except Exception:  # pragma: no cover - defensive
-            pass
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not apply the default volume to the source: %s", exc)
 
     _persist_state()
     _refresh_controller(ctx, session.guild_id)

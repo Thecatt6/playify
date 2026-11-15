@@ -282,7 +282,11 @@ svg { width: 1em; height: 1em; fill: currentColor; }
   z-index: 1;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 22px clamp(14px, 3vw, 32px) 26px;
+  /* viewport-fit=cover (see index.html): keep the chrome clear of the notch
+     and of the iOS home indicator. */
+  padding:
+    max(22px, env(safe-area-inset-top)) clamp(14px, 3vw, 32px)
+    max(26px, env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -1309,7 +1313,12 @@ input[type="range"]:disabled { opacity: 0.35; cursor: default; }
 }
 
 @media (max-width: 640px) {
-  .app { padding: 16px 13px 22px; gap: 14px; }
+  .app {
+    padding:
+      max(16px, env(safe-area-inset-top)) max(13px, env(safe-area-inset-left))
+      max(22px, env(safe-area-inset-bottom));
+    gap: 14px;
+  }
   .player { flex-direction: column; padding: 14px; }
   .art-shell { width: 100%; }
   .card { border-radius: 22px; }
@@ -1478,3 +1487,29 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   .sheet { animation: none; }
 }
+
+/* ============================== mobile extras =============================
+   The on-screen keyboard shrinks the visual viewport on phones: pad the page
+   by the difference so the search results are not hidden behind it. */
+body.keyboard-open .app { padding-bottom: 42vh; }
+
+.pull-hint {
+  position: fixed;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  translate: -50% 0;
+  z-index: 40;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s var(--ease), translate 0.16s var(--ease);
+}
+
+.pull-hint[data-visible="true"] { opacity: 1; translate: -50% 4px; }

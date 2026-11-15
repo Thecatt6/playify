@@ -427,8 +427,8 @@ async def process_apple_music_url(url, interaction):
                             .get("identifiers", {})
                             .get("storeAdamID")
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Apple Music item without a store id: %s", exc)
 
                     if title and artist:
                         if target_track_id:
