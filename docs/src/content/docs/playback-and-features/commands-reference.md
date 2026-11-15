@@ -64,3 +64,9 @@ Playify uses Discord's native slash commands. Type `/` in your server to see the
 | :--- | :--- |
 | `/status` | Displays the bot's system status and metrics. |
 | `/support` | Shows ways to support the creator of Playify. |
+
+## Interface
+
+| Command | Description |
+| :--- | :--- |
+| `/webui` | Get a private link to the browser interface (only usable while you sit in the bot's voice channel). The same link is available as a **🌐 Web UI** button on the player controller. |

@@ -26,6 +26,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Server Setup', slug: 'configuration/server-setup' },
 						{ label: 'TUI Dashboard', slug: 'configuration/tui-dashboard' },
+						{ label: 'Web UI', slug: 'configuration/web-ui' },
 						{ label: 'YouTube Cookies', slug: 'configuration/youtube-cookies' },
 					],
 				},

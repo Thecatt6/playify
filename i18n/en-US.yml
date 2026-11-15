@@ -459,6 +459,7 @@ controller:
     karaoke: "Karaoke"
     queue: "Show Queue"
     jump_to: "Jump to..."
+    webui: "Web UI"
     vol_down: "Vol-"
     vol_up: "Vol+"
 
@@ -469,3 +470,15 @@ presence:
   listening_volume: "/volume"
   listening_play: "/play [link]"
   playing_servers: "{count} servers"
+
+# ==============================================================================
+# 16. WEB UI
+# ==============================================================================
+webui:
+  title: "🌐 Playify Web UI"
+  description: "Control the player, the queue and every playback option from your browser.\nYou need to be in the same voice channel as {bot_name} to get access."
+  link_label: "Open the web interface"
+  not_configured: "The web UI is not running on this instance.\nAsk the bot owner to set `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` and `WEBUI_BASE_URL` in the `.env` file, then restart Playify."
+  not_in_voice: "⚠️ You are not in {bot_name}'s voice channel right now — the page unlocks as soon as you join it."
+  not_connected: "The bot is not connected to a voice channel yet. Use `/play` in the channel you want, then open the web interface."
+  footer: "Access is limited to listeners in the voice channel."

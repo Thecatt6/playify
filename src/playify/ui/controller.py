@@ -205,6 +205,39 @@ class MusicControllerView(View):
         }
         # The update_buttons method is called to set the initial state of the buttons
         self.update_buttons()
+        self._add_webui_button()
+
+    def _add_webui_button(self):
+        """Adds a link button to the browser interface when it is enabled.
+
+        Discord link buttons carry no ``custom_id``, so this one is created at
+        runtime instead of being declared with the persistent buttons above.
+        It simply opens the Web UI, where the actual access check happens.
+        """
+        try:
+            from ..webui.runtime import current_url, is_running
+        except Exception:  # pragma: no cover - aiohttp always ships with discord.py
+            return
+
+        if not is_running():
+            return
+
+        url = current_url()
+        if not url or not url.startswith(("http://", "https://")):
+            return
+
+        try:
+            self.add_item(
+                Button(
+                    style=ButtonStyle.link,
+                    label=get_messages("controller.label.webui", self.guild_id),
+                    emoji=None if get_mode(self.guild_id) else "🌐",
+                    url=url,
+                    row=2,
+                )
+            )
+        except Exception as e:  # pragma: no cover - the controller must never break
+            logger.warning(f"[{self.guild_id}] Could not add the Web UI button: {e}")
 
     def update_buttons(self):
         """Dynamically updates button labels, emojis, and states."""
@@ -218,7 +251,8 @@ class MusicControllerView(View):
             return get_messages(key, self.guild_id)
 
         for child in self.children:
-            if not hasattr(child, "custom_id"):
+            # Link buttons (such as the Web UI one) have no custom_id.
+            if not getattr(child, "custom_id", None):
                 continue
 
             custom_id = child.custom_id
@@ -277,7 +311,7 @@ class MusicControllerView(View):
             )
 
         for child in self.children:
-            if hasattr(child, "custom_id") and child.custom_id not in [
+            if getattr(child, "custom_id", None) and child.custom_id not in [
                 "controller_stop",
                 "controller_add_song",
             ]:

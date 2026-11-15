@@ -323,5 +323,13 @@ async def on_ready():
 
         await load_states_on_startup()
 
+        # Start the optional Web UI (it stays off until Discord OAuth is configured).
+        try:
+            from .webui.runtime import start_webui
+
+            await start_webui(bot)
+        except Exception as e:
+            logger.error(f"Failed to start the Web UI: {e}", exc_info=True)
+
     except Exception as e:
         logger.error(f"Error during command synchronization: {e}")
