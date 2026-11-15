@@ -14,7 +14,13 @@ from urllib.parse import urlparse
 from aiohttp import WSMsgType, web
 
 from . import actions as actions_module
-from .access import connected_channels, resolve_session, resolve_sessions
+from .access import (
+    connected_channels,
+    ensure_member,
+    needs_member_fetch,
+    resolve_session,
+    resolve_sessions,
+)
 from .config import OAUTH_STATE_COOKIE, SESSION_COOKIE
 from .context import WebUIContext
 from .oauth import OAuthError
@@ -185,41 +191,55 @@ def _guild_id(value: Any) -> int:
     return guild_id
 
 
-def require_access(ctx: WebUIContext, payload: dict[str, Any], guild_id: int):
-    """Resolve the visitor's voice session, with a precise reason when refused.
+def _profile(payload: dict[str, Any]) -> dict[str, Any]:
+    """Display data from the OAuth session, used when the member cache is cold."""
+    return {
+        "name": payload.get("name") or payload.get("username") or "",
+        "avatar": payload.get("avatar") or "",
+    }
 
-    The three failure modes are very different for the user, so they get their
-    own ``reason`` code and message instead of a generic "join the channel".
-    """
-    user_id = _user_id(payload)
-    for session in resolve_sessions(ctx.bot, user_id):
-        if session.guild_id == guild_id:
-            return session
 
+def access_denial(ctx: WebUIContext, user_id: int, guild_id: int) -> tuple[str, str]:
+    """Explain *why* access is denied, with an actionable message."""
     channels = connected_channels(ctx.bot)
     playing_here = next(
         (channel for channel in channels if str(channel.get("guild_id")) == str(guild_id)),
         None,
     )
     if not channels:
-        raise ApiError(
-            403,
+        return (
             "bot_not_in_voice",
             "Playify is not connected to any voice channel right now. "
             "Start a song with /play in Discord and the panel will unlock on its own.",
         )
     if playing_here is None:
-        raise ApiError(
-            403,
+        return (
             "bot_not_in_this_server",
             "Playify is playing in another server. Open the panel from that one.",
         )
     channel_name = playing_here.get("channel_name") or "voice"
-    raise ApiError(
-        403,
+    return (
         "not_in_channel",
         f"Join the voice channel “{channel_name}” to control the player.",
     )
+
+
+def require_access(ctx: WebUIContext, payload: dict[str, Any], guild_id: int):
+    """Resolve the visitor's voice session, with a precise reason when refused."""
+    user_id = _user_id(payload)
+    for session in resolve_sessions(ctx.bot, user_id, _profile(payload)):
+        if session.guild_id == guild_id:
+            return session
+
+    reason, message = access_denial(ctx, user_id, guild_id)
+    logger.info(
+        "Web UI access denied (%s) for user %s in guild %s — bot voice channels: %s",
+        reason,
+        user_id,
+        guild_id,
+        [channel.get("channel_name") for channel in connected_channels(ctx.bot)],
+    )
+    raise ApiError(403, reason, message)
 
 
 def _check_rate_limit(user_id: int, action: str) -> None:
@@ -368,7 +388,22 @@ async def handle_me(request: web.Request) -> web.Response:
     ctx: WebUIContext = request.app["ctx"]
     payload = require_session(request, ctx)
     user_id = _user_id(payload)
-    sessions = resolve_sessions(ctx.bot, user_id)
+    profile = _profile(payload)
+    sessions = resolve_sessions(ctx.bot, user_id, profile)
+
+    # Without the privileged members intent the guild cache is empty, so the
+    # permissions needed by the server settings box are fetched over REST once.
+    if any(needs_member_fetch(session) for session in sessions):
+        await asyncio.gather(
+            *(
+                ensure_member(ctx.bot, session.guild_id, user_id)
+                for session in sessions
+                if needs_member_fetch(session)
+            ),
+            return_exceptions=True,
+        )
+        sessions = resolve_sessions(ctx.bot, user_id, profile)
+
     return web.json_response(
         {
             "ok": True,
@@ -458,13 +493,17 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
     user_id = _user_id(payload)
     guild_id = _guild_id(request.query.get("guild_id"))
 
-    session = resolve_session(ctx.bot, user_id, guild_id)
+    profile = _profile(payload)
+    session = resolve_session(ctx.bot, user_id, guild_id, profile)
     if session is None:
-        raise ApiError(
-            403,
-            "not_in_voice",
-            "You must be in the same voice channel as Playify to use the web UI.",
-        )
+        # A refused handshake shows up in the browser as "connection refused";
+        # accepting and closing with 4003 plus a reason is far more useful.
+        reason, message = access_denial(ctx, user_id, guild_id)
+        logger.info("Web UI WebSocket denied (%s) for user %s", reason, user_id)
+        denied = web.WebSocketResponse()
+        await denied.prepare(request)
+        await denied.close(code=4003, message=message.encode()[:120])
+        return denied
 
     ws = web.WebSocketResponse(heartbeat=30.0, max_msg_size=256 * 1024)
     await ws.prepare(request)
@@ -503,7 +542,7 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
 
     async def pusher() -> None:
         while not stop.is_set():
-            current = resolve_session(ctx.bot, user_id, guild_id)
+            current = resolve_session(ctx.bot, user_id, guild_id, profile)
             if current is None:
                 await send(
                     {
@@ -543,7 +582,7 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
             action = str(incoming.get("action") or "")
             data = incoming.get("data") if isinstance(incoming.get("data"), dict) else {}
 
-            current = resolve_session(ctx.bot, user_id, guild_id)
+            current = resolve_session(ctx.bot, user_id, guild_id, profile)
             if current is None:
                 await send(
                     {

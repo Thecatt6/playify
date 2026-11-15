@@ -74,6 +74,15 @@ If you use a reverse proxy and change the public URL later, remember to update `
 
 There is no password, no API key and no "admin panel": if you are not in the voice channel, you are nobody.
 
+:::note
+The check reads Discord's **voice states**, not the guild member cache. Playify runs with the default
+intents (no privileged *Server Members* intent), so `guild.members` is usually empty — membership is
+therefore decided from the user id reported by the gateway, and your name/avatar come from the OAuth
+profile. Permissions (`Manage Server`, needed for the server settings box) are fetched once over REST
+when the page loads; enabling the *Server Members* intent in the developer portal only improves the
+listener list (real names and avatars for everybody in the channel).
+:::
+
 ## Configuration reference
 
 | Variable | Default | Description |
@@ -158,6 +167,16 @@ That screen is the access rule working as intended — but the message now tells
 * *"Join the voice channel “X”"* → the bot is in another channel: join X.
 
 The page refreshes by itself, and access is derived from Discord's voice states, so a cold member cache can never lock you out.
+</details>
+
+<details>
+<summary><b>The browser reports "connection refused" on <code>wss://…/ws</code></b></summary>
+
+If access is denied, Playify now accepts the socket and closes it with code `4003` plus the reason, so
+the browser shows the explanation instead of a refused handshake. Read the message on the page and in
+the bot log (`Web UI access denied (<reason>) for user …`): `bot_not_in_voice` means the bot is not in
+a channel, `not_in_channel` means you are in a different one. A *real* refusal usually means the
+reverse proxy is not forwarding the `Upgrade` header — see the Nginx snippet above.
 </details>
 
 <details>

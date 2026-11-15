@@ -439,11 +439,16 @@ async def test_server_settings_require_the_manage_server_permission(app_bundle, 
 
 
 async def test_websocket_requires_voice_membership(app_bundle):
+    """Denied sockets now close with 4003 + a reason instead of a 403 handshake."""
     headers = auth_headers(
         app_bundle.ctx, {"id": "99", "username": "stranger", "global_name": "Stranger"}
     )
-    response = await app_bundle.client.get(f"/ws?guild_id={GUILD_ID}", headers=headers)
-    assert response.status == 403
+    ws = await app_bundle.client.ws_connect(f"/ws?guild_id={GUILD_ID}", headers=headers)
+    message = await asyncio.wait_for(ws.receive(), 3)
+    assert message.type.name == "CLOSE"
+    assert ws.close_code == 4003
+    assert "Lounge" in (message.extra or "")
+    await ws.close()
 
 
 async def test_websocket_streams_state_and_accepts_actions(app_bundle):
@@ -531,6 +536,32 @@ async def test_membership_survives_an_empty_member_cache(app_bundle):
     assert response.status == 200
     body = await response.json()
     assert body["state"]["session"]["listener_count"] == 1
+
+
+async def test_access_works_with_only_voice_state_user_ids(app_bundle):
+    """The real bot has no members intent: only user ids are available.
+
+    This is the exact production case that used to answer "you are not in the
+    channel" while the listener was sitting in it.
+    """
+    import types
+
+    world = app_bundle.world
+    world.channel.members = []
+    world.guild._members = {}
+    world.listener.voice = None
+    world.guild.voice_states = {
+        USER_ID: types.SimpleNamespace(channel=world.channel, member=None, user=None)
+    }
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    session = (await response.json())["state"]["session"]
+    assert session["channel_name"] == "Lounge"
+    assert session["listener_count"] == 1
+    assert session["listeners"][0]["name"] in {"Listener", "listener"}
 
 
 async def test_zombie_voice_client_still_grants_access(app_bundle):

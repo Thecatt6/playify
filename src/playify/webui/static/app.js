@@ -205,6 +205,19 @@
     });
   };
 
+  /* Access denied by the server, with its own explanation (not connected,
+     wrong channel, different server…). */
+  const gateForDenied = (message) => {
+    stopPolling();
+    showGate({
+      title: "Can't unlock yet",
+      text: message || "Join Playify's voice channel to control the player.",
+      showRetry: true,
+      poll: true,
+      note: "Access is granted only while you sit in the same voice channel as the bot. This page re-checks by itself.",
+    });
+  };
+
   const gateForRevoked = (message) => {
     stopPolling();
     showGate({
@@ -592,8 +605,13 @@
           { credentials: "same-origin" }
         );
         if (response.status === 403) {
+          const payload = await response.json().catch(() => ({}));
           stopPolling();
-          gateForRevoked();
+          if (payload.error === "unauthenticated") {
+            gateForLogin();
+          } else {
+            gateForDenied(payload.message);
+          }
           return;
         }
         if (!response.ok) return;
@@ -668,7 +686,8 @@
       if (!app.wsWanted) return;
       if (event.code === 4003) {
         app.wsWanted = false;
-        gateForRevoked();
+        setConnection("offline", "Locked");
+        gateForDenied(event.reason);
         return;
       }
       setConnection("offline", "Reconnecting");
