@@ -538,6 +538,44 @@ async def test_membership_survives_an_empty_member_cache(app_bundle):
     assert body["state"]["session"]["listener_count"] == 1
 
 
+async def test_19_digit_guild_ids_are_handled_exactly(app_bundle):
+    """Discord snowflakes are bigger than a JS Number: keep them as strings."""
+    world = app_bundle.world
+    snowflake = 1137104646637359100
+    world.guild.id = snowflake
+    world.state.guild_id = snowflake
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={snowflake}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    session = (await response.json())["state"]["session"]
+    assert session["guild_id"] == str(snowflake)
+
+
+async def test_unknown_guild_falls_back_to_the_only_session(app_bundle):
+    """A stale/truncated id must not lock the only eligible listener out."""
+    response = await app_bundle.client.get(
+        "/api/state?guild_id=1137104646637359104",  # rounded by the browser
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 200
+    session = (await response.json())["state"]["session"]
+    assert session["guild_id"] == str(GUILD_ID)
+
+
+async def test_diagnostics_explain_the_access_state(app_bundle):
+    response = await app_bundle.client.get(
+        f"/api/diagnostics?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    body = await response.json()
+    assert body["requested_guild_known"] is True
+    assert body["bot_voice_channels"][0]["channel_name"] == "Lounge"
+    assert body["guild_voice_states"][0]["bot_is_in"] == "Lounge"
+    assert body["sessions"][0]["guild_id"] == str(GUILD_ID)
+
+
 async def test_bot_playing_in_another_server_is_explained(app_bundle):
     """Being connected elsewhere must say *where*, not just "another server"."""
     world = app_bundle.world

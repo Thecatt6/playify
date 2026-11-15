@@ -165,6 +165,7 @@ That screen is the access rule working as intended — but the message now tells
 * *"Playify is not connected to any voice channel"* → start playback with `/play`.
 * *"Playify is listed in #channel but its voice connection is not responding"* → the voice client died; the watchdog rebuilds it within ~25 s, or run `/reconnect`.
 * *"Join the voice channel “X”"* → the bot is in another channel: join X.
+* *"Playify is not in a server with id …"* → the page sent an id the bot does not know (usually a stale tab or a truncated 19-digit id). Reload with `Ctrl+Shift+R`; if you have a single active session the bot already falls back to it by itself.
 * *"Playify is not in a voice channel in this server … it is playing in #channel in Server Y"* → the bot is only connected there. Join that channel in that server, or run `/play` in a voice channel here to move it; if you also have a session in Server Y, the page hops there by itself.
 
 The page refreshes by itself, and access is derived from Discord's voice states, so a cold member cache can never lock you out.
@@ -204,3 +205,19 @@ pytest -q
 ```
 
 They cover access control, session signing, the snapshot builder, the player actions and the WebSocket live loop — no Discord token required.
+
+### When the gate refuses to open
+
+Open `/api/diagnostics?guild_id=<id>` in the same browser (you must be signed in). It answers with exactly what the bot sees:
+
+```json
+{
+  "requested_guild_id": "1137104646637359100",
+  "requested_guild_known": true,
+  "bot_voice_channels": [{ "guild_id": "…", "channel_name": "lofi", "connected": true }],
+  "guild_voice_states": [{ "you_are_in": "lofi", "bot_is_in": "lofi", "member_in_cache": false }],
+  "sessions": [{ "guild_id": "…" }]
+}
+```
+
+If `bot_is_in` is `null` the bot is not connected in that server; if `you_are_in` is `null` Discord does not report you in a voice channel (voice states can lag a few seconds after joining). Note the ids are strings on purpose: Discord snowflakes are larger than a JavaScript number, which is also why the front-end never converts them.

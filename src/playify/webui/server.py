@@ -199,8 +199,31 @@ def _profile(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _known_guild(ctx: WebUIContext, guild_id: int) -> Any:
+    """The guild object if Playify is actually in it (``None`` otherwise)."""
+    bot = ctx.bot
+    get_guild = getattr(bot, "get_guild", None)
+    if callable(get_guild):
+        guild = get_guild(guild_id)
+        if guild is not None:
+            return guild
+    for guild in getattr(bot, "guilds", None) or []:
+        try:
+            if int(getattr(guild, "id", 0) or 0) == int(guild_id):
+                return guild
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            continue
+    return None
+
+
 def access_denial(ctx: WebUIContext, user_id: int, guild_id: int) -> tuple[str, str]:
     """Explain *why* access is denied, with an actionable message."""
+    if _known_guild(ctx, guild_id) is None:
+        return (
+            "unknown_guild",
+            f"Playify is not in a server with id {guild_id}. Reload the page: an old or "
+            "truncated server id was sent to the bot.",
+        )
     channels = connected_channels(ctx.bot)
     playing_here = next(
         (channel for channel in channels if str(channel.get("guild_id")) == str(guild_id)),
@@ -236,9 +259,23 @@ def access_denial(ctx: WebUIContext, user_id: int, guild_id: int) -> tuple[str, 
 def require_access(ctx: WebUIContext, payload: dict[str, Any], guild_id: int):
     """Resolve the visitor's voice session, with a precise reason when refused."""
     user_id = _user_id(payload)
-    for session in resolve_sessions(ctx.bot, user_id, _profile(payload)):
+    profile = _profile(payload)
+    sessions = resolve_sessions(ctx.bot, user_id, profile)
+    for session in sessions:
         if session.guild_id == guild_id:
             return session
+
+    # Stale/truncated guild id in the page (browsers cannot represent 19-digit
+    # snowflakes exactly): if the visitor has exactly one eligible session, that
+    # is obviously the one they mean, so use it instead of failing.
+    if _known_guild(ctx, guild_id) is None and len(sessions) == 1:
+        logger.info(
+            "Web UI: unknown guild %s for user %s, falling back to guild %s",
+            guild_id,
+            user_id,
+            sessions[0].guild_id,
+        )
+        return sessions[0]
 
     reason, message = access_denial(ctx, user_id, guild_id)
     logger.info(
@@ -474,6 +511,74 @@ async def handle_suggest(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "suggestions": suggestions})
 
 
+async def handle_diagnostics(request: web.Request) -> web.Response:
+    """Everything the access check sees, for when the gate refuses to open."""
+    ctx: WebUIContext = request.app["ctx"]
+    payload = require_session(request, ctx)
+    user_id = _user_id(payload)
+    requested = request.query.get("guild_id")
+
+    bot = ctx.bot
+    guilds = list(getattr(bot, "guilds", None) or [])
+
+    # The bot's own voice client may be the only source of truth on guilds whose
+    # member cache is cold, so keep both views.
+    clients: dict[str, Any] = {}
+    for voice_client in getattr(bot, "voice_clients", None) or []:
+        channel = getattr(voice_client, "channel", None)
+        guild = getattr(channel, "guild", None) if channel is not None else None
+        if guild is not None:
+            clients[str(getattr(guild, "id", ""))] = voice_client
+
+    voice_states: list[dict[str, Any]] = []
+    for guild in guilds:
+        guild_key = str(getattr(guild, "id", ""))
+        states = getattr(guild, "voice_states", None)
+        state = states.get(user_id) if isinstance(states, dict) else None
+        me = getattr(guild, "me", None)
+        me_voice = getattr(getattr(me, "voice", None), "channel", None)
+        voice_client = clients.get(guild_key) or getattr(guild, "voice_client", None)
+        if me_voice is None and voice_client is not None:
+            me_voice = getattr(voice_client, "channel", None)
+        if state is None and me_voice is None:
+            continue
+        channel = getattr(state, "channel", None)
+        get_member = getattr(guild, "get_member", None)
+        voice_states.append(
+            {
+                "guild_id": guild_key,
+                "guild_name": str(getattr(guild, "name", "")),
+                "you_are_in": getattr(channel, "name", None),
+                "bot_is_in": getattr(me_voice, "name", None),
+                "bot_voice_client_connected": bool(
+                    getattr(voice_client, "is_connected", lambda: False)()
+                ),
+                "member_in_cache": bool(
+                    callable(get_member) and get_member(user_id) is not None
+                ),
+                "voice_state_has_member_object": getattr(state, "member", None) is not None,
+            }
+        )
+
+    requested_known = False
+    if str(requested or "").isdigit():
+        requested_known = _known_guild(ctx, int(requested)) is not None
+
+    sessions = resolve_sessions(bot, user_id, _profile(payload))
+    return web.json_response(
+        {
+            "ok": True,
+            "requested_guild_id": requested,
+            "requested_guild_known": requested_known,
+            "you": {"id": str(user_id), "name": payload.get("name") or ""},
+            "bot_voice_channels": connected_channels(bot),
+            "guild_voice_states": voice_states,
+            "sessions": [session.public() for session in sessions],
+            "bot_guild_ids": [str(getattr(guild, "id", "")) for guild in guilds][:25],
+        }
+    )
+
+
 async def handle_action(request: web.Request) -> web.Response:
     ctx: WebUIContext = request.app["ctx"]
     payload = require_session(request, ctx)
@@ -678,6 +783,7 @@ def create_app(ctx: WebUIContext) -> web.Application:
     app.router.add_get("/api/state", handle_state)
     app.router.add_get("/api/search", handle_search)
     app.router.add_get("/api/suggest", handle_suggest)
+    app.router.add_get("/api/diagnostics", handle_diagnostics)
     app.router.add_post("/api/action", handle_action)
     app.router.add_get("/ws", handle_websocket)
 

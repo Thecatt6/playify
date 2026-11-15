@@ -61,6 +61,10 @@
 
   /* ------------------------------------------------------------ formatting */
 
+  /* Discord snowflakes exceed Number.MAX_SAFE_INTEGER: 19-digit ids must stay
+     strings or they get silently rounded (…100 -> …104) and stop matching. */
+  const sameId = (a, b) => String(a ?? "") === String(b ?? "");
+
   const fmtTime = (seconds) => {
     const value = Math.max(0, Math.floor(Number(seconds) || 0));
     const h = Math.floor(value / 3600);
@@ -218,12 +222,11 @@
       const data = await response.json();
       app.me = data;
       app.sessions = data.sessions || [];
-      const current = Number(app.guildId);
       const target = app.sessions.find(
-        (session) => Number(session.guild_id) !== current
+        (session) => !sameId(session.guild_id, app.guildId)
       );
       if (!target || !app.sessions.length) return false;
-      app.guildId = Number(target.guild_id);
+      app.guildId = String(target.guild_id);
       localStorage.setItem("playify.guild", String(app.guildId));
       stopGatePolling();
       $("gate").hidden = true;
@@ -272,9 +275,9 @@
       return;
     }
 
-    const stored = Number(localStorage.getItem("playify.guild") || 0);
-    const known = app.sessions.some((session) => Number(session.guild_id) === stored);
-    app.guildId = known ? stored : Number(app.sessions[0].guild_id);
+    const stored = localStorage.getItem("playify.guild") || "";
+    const known = app.sessions.some((session) => sameId(session.guild_id, stored));
+    app.guildId = known ? stored : String(app.sessions[0].guild_id);
     localStorage.setItem("playify.guild", String(app.guildId));
 
     stopGatePolling();
@@ -338,7 +341,7 @@
   };
 
   const currentSession = () =>
-    app.sessions.find((session) => Number(session.guild_id) === Number(app.guildId)) ||
+    app.sessions.find((session) => sameId(session.guild_id, app.guildId)) ||
     app.sessions[0] ||
     null;
 
@@ -407,9 +410,17 @@
   const renderSnapshot = (snapshot) => {
     app.snapshot = snapshot;
     renderConnBar(snapshot);
+
+    // The server is the authority on which guild this is: the page may have
+    // asked with a stale id and been served a different (valid) session.
+    const sessionGuild = snapshot.session && snapshot.session.guild_id;
+    if (sessionGuild && !sameId(sessionGuild, app.guildId)) {
+      app.guildId = String(sessionGuild);
+      localStorage.setItem("playify.guild", app.guildId);
+    }
     if (snapshot.session) {
       const index = app.sessions.findIndex(
-        (session) => Number(session.guild_id) === Number(snapshot.session.guild_id)
+        (session) => sameId(session.guild_id, snapshot.session.guild_id)
       );
       if (index >= 0) app.sessions[index] = { ...app.sessions[index], ...snapshot.session };
       renderSessions();
@@ -770,7 +781,7 @@
           method: "POST",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ guild_id: Number(app.guildId), action, data }),
+          body: JSON.stringify({ guild_id: String(app.guildId), action, data }),
         })
           .then(async (response) => {
             const payload = await response.json().catch(() => ({}));
@@ -919,10 +930,10 @@
             "button",
             {
               type: "button",
-              "aria-current": Number(session.guild_id) === Number(app.guildId) ? "true" : "false",
+              "aria-current": sameId(session.guild_id, app.guildId) ? "true" : "false",
               onclick: () => {
                 popover.remove();
-                selectGuild(Number(session.guild_id));
+                selectGuild(String(session.guild_id));
               },
             },
             el(
@@ -1008,7 +1019,7 @@
   };
 
   const selectGuild = (guildId) => {
-    if (Number(guildId) === Number(app.guildId)) return;
+    if (sameId(guildId, app.guildId)) return;
     app.guildId = guildId;
     localStorage.setItem("playify.guild", String(guildId));
     app.snapshot = null;
