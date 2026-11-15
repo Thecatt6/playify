@@ -21,7 +21,18 @@ startup and logs the full list as `Slash commands available: …`): it reports t
 volume and whether `ffmpeg`/`PyNaCl`/`davey` are installed, in one private embed. If you prefer a
 terminal, `python tools/doctor.py` checks the environment at once.
 
-If `/diagnose` shows everything ✅ and the volume is above 2 %, the cause is one of these:
+If `/diagnose` shows everything ✅, the volume is above 2 % and **Audio measurement** says
+`audible ✅`, then the bot really is sending sound into the channel and the problem is on the client
+side. In that order:
+
+1. **Your own per-user volume for the bot.** Right-click Playify in the voice channel → **Volume**.
+   This slider lives only in your client: the bot cannot see it, and it silences just you. It is the
+   most common cause of "everyone else hears it".
+2. **You are deafened** (the `You` field in `/diagnose` says so) or Discord is sending the audio to
+   another output device.
+3. Ask somebody else in the channel: if they hear the music, it is not the bot.
+
+Otherwise the cause is one of these:
 
 1. **A dependency is missing.** discord.py needs `PyNaCl` to encrypt voice and `davey` to talk in
    end-to-end encrypted channels, while `ffmpeg` decodes the audio. Look for
