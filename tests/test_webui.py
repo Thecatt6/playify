@@ -538,6 +538,23 @@ async def test_membership_survives_an_empty_member_cache(app_bundle):
     assert body["state"]["session"]["listener_count"] == 1
 
 
+async def test_bot_playing_in_another_server_is_explained(app_bundle):
+    """Being connected elsewhere must say *where*, not just "another server"."""
+    world = app_bundle.world
+    other_guild = Guild(7, "Other Server")
+    other_channel = Channel(8, "lofi", other_guild, [])
+    world.bot.voice_clients = [VoiceClient(other_channel)]
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 403
+    message = (await response.json())["message"]
+    assert "Other Server" in message
+    assert "#lofi" in message
+    assert "/play" in message
+
+
 async def test_access_works_with_only_voice_state_user_ids(app_bundle):
     """The real bot has no members intent: only user ids are available.
 

@@ -55,6 +55,7 @@
     toastTimer: null,
     gateTimer: null,
     pollTimer: null,
+    lastRecovery: 0,
     lastQueueKey: "",
   };
 
@@ -203,6 +204,39 @@
       poll: true,
       note: "Listening in the same channel is what grants access — leaving it revokes access instantly.",
     });
+  };
+
+  /* When the panel was opened for a server where the bot is not playing, look
+     at /api/me again: if the visitor has a session in another server, hop over
+     instead of leaving them on a dead end. */
+  const recoverSession = async () => {
+    if (Date.now() - (app.lastRecovery || 0) < 5000) return false;
+    app.lastRecovery = Date.now();
+    try {
+      const response = await fetch("/api/me", { credentials: "same-origin" });
+      if (!response.ok) return false;
+      const data = await response.json();
+      app.me = data;
+      app.sessions = data.sessions || [];
+      const current = Number(app.guildId);
+      const target = app.sessions.find(
+        (session) => Number(session.guild_id) !== current
+      );
+      if (!target || !app.sessions.length) return false;
+      app.guildId = Number(target.guild_id);
+      localStorage.setItem("playify.guild", String(app.guildId));
+      stopGatePolling();
+      $("gate").hidden = true;
+      $("app").hidden = false;
+      $("boot").classList.add("is-hidden");
+      renderIdentity();
+      renderSessions();
+      connect();
+      toast(`Switched to ${target.guild_name || "another server"}`, "ok");
+      return true;
+    } catch (_) {
+      return false;
+    }
   };
 
   /* Access denied by the server, with its own explanation (not connected,
@@ -609,9 +643,12 @@
           stopPolling();
           if (payload.error === "unauthenticated") {
             gateForLogin();
-          } else {
-            gateForDenied(payload.message);
+            return;
           }
+          if (payload.error === "bot_not_in_this_server" && (await recoverSession())) {
+            return;
+          }
+          gateForDenied(payload.message);
           return;
         }
         if (!response.ok) return;
@@ -687,7 +724,14 @@
       if (event.code === 4003) {
         app.wsWanted = false;
         setConnection("offline", "Locked");
-        gateForDenied(event.reason);
+        const reason = event.reason || "";
+        if (/another server|not in a voice channel in this server/i.test(reason)) {
+          recoverSession().then((switched) => {
+            if (!switched) gateForDenied(reason);
+          });
+          return;
+        }
+        gateForDenied(reason);
         return;
       }
       setConnection("offline", "Reconnecting");

@@ -165,6 +165,7 @@ That screen is the access rule working as intended — but the message now tells
 * *"Playify is not connected to any voice channel"* → start playback with `/play`.
 * *"Playify is listed in #channel but its voice connection is not responding"* → the voice client died; the watchdog rebuilds it within ~25 s, or run `/reconnect`.
 * *"Join the voice channel “X”"* → the bot is in another channel: join X.
+* *"Playify is not in a voice channel in this server … it is playing in #channel in Server Y"* → the bot is only connected there. Join that channel in that server, or run `/play` in a voice channel here to move it; if you also have a session in Server Y, the page hops there by itself.
 
 The page refreshes by itself, and access is derived from Discord's voice states, so a cold member cache can never lock you out.
 </details>

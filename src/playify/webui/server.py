@@ -213,9 +213,18 @@ def access_denial(ctx: WebUIContext, user_id: int, guild_id: int) -> tuple[str, 
             "Start a song with /play in Discord and the panel will unlock on its own.",
         )
     if playing_here is None:
+        # The bot is connected *somewhere*, just not in this guild: name the
+        # places so the message is actionable instead of mysterious.
+        places = ", ".join(
+            f"#{channel.get('channel_name') or 'voice'} in {channel.get('guild_name') or 'another server'}"
+            for channel in channels[:3]
+        )
+        suffix = "" if len(channels) <= 3 else f" (+{len(channels) - 3} more)"
         return (
             "bot_not_in_this_server",
-            "Playify is playing in another server. Open the panel from that one.",
+            f"Playify is not in a voice channel in this server right now — it is "
+            f"playing in {places}{suffix}. Join that channel there to use the panel, "
+            "or run /play in a voice channel here to start playing in this server.",
         )
     channel_name = playing_here.get("channel_name") or "voice"
     return (
