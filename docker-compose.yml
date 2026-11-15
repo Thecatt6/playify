@@ -7,3 +7,13 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "tools/healthcheck.py"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 45s
+    volumes:
+      # Keeps the database and the rotating log across rebuilds.
+      - ./data:/app/data
+      - ./logs:/app/logs

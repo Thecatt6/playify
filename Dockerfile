@@ -18,12 +18,19 @@ RUN apt-get update && \
 RUN ln -sf /usr/bin/python3.12 /usr/bin/python && \
     ln -sf /usr/bin/python3.12 /usr/bin/python3
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt --break-system-packages
+# requirements.lock is the frozen resolution of requirements.txt (transitive
+# dependencies included), so every rebuild installs the exact same set.
+COPY requirements.txt requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock --break-system-packages
 
 COPY . .
 
 # Web UI (optional, configurable through WEBUI_PORT)
 EXPOSE 8080
+
+# Reports unhealthy when the panel stops answering /healthz (the bot can be
+# "running" with a dead web app). Skipped automatically when WEBUI_ENABLED=false.
+HEALTHCHECK --interval=30s --timeout=6s --start-period=45s --retries=3 \
+    CMD python tools/healthcheck.py || exit 1
 
 CMD ["python", "playify.py"]

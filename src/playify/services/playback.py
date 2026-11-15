@@ -1,6 +1,16 @@
 """Core playback engine and karaoke sync tasks."""
 
 from ..core import *
+from . import stats
+from .playback_flow import (
+    AFTER_DISCONNECTED,
+    AFTER_LOOP,
+    AFTER_PAUSED_BY_LEAVE,
+    AFTER_RECONNECTING,
+    AFTER_REPLAY,
+    AFTER_SEEK,
+    resolve_after_playing,
+)
 from ..helpers.common import *
 from ..helpers.url_utils import *
 from ..models.lazy_search import LazySearchItem
@@ -15,6 +25,8 @@ async def handle_playback_error(guild_id: int, error: Exception, query_url: str 
     """
     state = get_guild_state(guild_id)
     music_player = state.music_player
+    # Kept for /diagnose: the most common "no audio" report has an error here.
+    music_player.last_error = f"{type(error).__name__}: {error}"[:400]
     if not music_player.text_channel:
         logger.error(
             f"Cannot report error in guild {guild_id}, no text channel available."
@@ -115,15 +127,26 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
         if error:
             logger.error(f"Error after playing in guild {guild_id}: {error}")
 
-        if music_player.is_paused_by_leave:
+        song_that_finished = music_player.current_info
+        decision = resolve_after_playing(
+            paused_by_leave=music_player.is_paused_by_leave,
+            manual_stop=music_player.manual_stop,
+            voice_connected=bool(
+                music_player.voice_client
+                and music_player.voice_client.is_connected()
+            ),
+            reconnecting=music_player.is_reconnecting,
+            seek_info=music_player.seek_info,
+            loop_current=music_player.loop_current,
+        )
+
+        if decision == AFTER_PAUSED_BY_LEAVE:
             logger.info(
                 f"[{guild_id}] Playback intentionally paused due to empty channel. Not proceeding to next track."
             )
             return
 
-        song_that_finished = music_player.current_info
-
-        if music_player.manual_stop:
+        if decision == AFTER_REPLAY:
             logger.warning(
                 f"[{guild_id}] after_playing: Manual stop detected. Bypassing 24/7 logic."
             )
@@ -135,18 +158,17 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
             )
             return
 
-        if (
-            not music_player.voice_client
-            or not music_player.voice_client.is_connected()
-        ):
+        if decision == AFTER_DISCONNECTED:
             logger.info(
                 f"[{guild_id}] after_playing: Voice client disconnected, stopping playback loop."
             )
-            return
-        if music_player.is_reconnecting:
+            music_player.stop_clock()
             return
 
-        if music_player.seek_info is not None:
+        if decision == AFTER_RECONNECTING:
+            return
+
+        if decision == AFTER_SEEK:
             new_seek_time = music_player.seek_info
             music_player.seek_info = None
             bot.loop.create_task(
@@ -154,7 +176,7 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
             )
             return
 
-        if music_player.loop_current:
+        if decision == AFTER_LOOP:
             bot.loop.create_task(play_audio(guild_id, is_a_loop=True))
             return
 
@@ -394,6 +416,9 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
                 if music_player.queue.empty():
                     logger.info(f"[{guild_id}] Queue is empty, stopping playback.")
                     music_player.current_task = None
+                    # Nothing is playing any more: stop the clock, otherwise the
+                    # panel keeps counting past the end of the last track.
+                    music_player.stop_clock()
                     bot.loop.create_task(update_controller(bot, guild_id))
                     if not get_guild_state(guild_id)._24_7_mode:
                         await asyncio.sleep(60)
@@ -569,7 +594,17 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
             volume=music_player.volume,
         )
 
-        callback = lambda e: bot.loop.create_task(after_playing(e))
+        def callback(error):
+            """discord.py calls ``after`` from the audio thread, not the loop.
+
+            ``loop.create_task`` from a foreign thread is not thread-safe and
+            could silently drop the coroutine (no next track, no autoplay), so
+            hand it to the loop properly.
+            """
+            try:
+                asyncio.run_coroutine_threadsafe(after_playing(error), bot.loop)
+            except Exception as exc:  # pragma: no cover - shutdown races
+                logger.error(f"[{guild_id}] Could not schedule after_playing: {exc}")
 
         if (
             not music_player.voice_client
@@ -583,8 +618,19 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
         music_player.voice_client.play(source, after=callback)
 
         music_player.start_time = seek_time
+        if not (is_a_loop or seek_time > 0):
+            stats.inc("tracks_played")
         music_player.playback_started_at = time.time()
-        logger.info(f"[{guild_id}] Playing '{music_player.current_info.get('title', 'Unknown')}'")
+        music_player.last_error = None
+        logger.info(
+            f"[{guild_id}] Playing '{music_player.current_info.get('title', 'Unknown')}' "
+            f"at volume {music_player.volume * 100:.0f}%"
+        )
+        if (music_player.volume or 0) < 0.02:
+            logger.warning(
+                f"[{guild_id}] Volume is {music_player.volume * 100:.0f}%: playback is "
+                "audible only if the volume is raised (/volume or the Web UI slider)."
+            )
 
         state = get_guild_state(guild_id)
         if state.controller_channel_id and not is_a_loop and seek_time == 0:

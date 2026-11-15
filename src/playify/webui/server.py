@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,16 @@ from urllib.parse import urlparse
 from aiohttp import WSMsgType, web
 
 from . import actions as actions_module
-from .access import connected_channels, resolve_session, resolve_sessions
+from . import lyrics_service, metrics, thumbnails
+from . import snapshot as snapshot_module
+from ..services import error_feed, stats
+from .access import (
+    connected_channels,
+    ensure_member,
+    needs_member_fetch,
+    resolve_session,
+    resolve_sessions,
+)
 from .config import OAUTH_STATE_COOKIE, SESSION_COOKIE
 from .context import WebUIContext
 from .oauth import OAuthError
@@ -34,6 +44,8 @@ _HEAVY_ACTIONS = {"play"}
 _HEAVY_COOLDOWN = 1.0
 _DEFAULT_COOLDOWN = 0.25
 _rate_limits: dict[tuple[int, str], float] = {}
+# Open websocket connections, for /metrics.
+_ws_connections = 0
 
 CSP = (
     "default-src 'self'; "
@@ -185,15 +197,101 @@ def _guild_id(value: Any) -> int:
     return guild_id
 
 
-def require_access(ctx: WebUIContext, payload: dict[str, Any], guild_id: int):
-    session = resolve_session(ctx.bot, _user_id(payload), guild_id)
-    if session is None:
-        raise ApiError(
-            403,
-            "not_in_voice",
-            "You must be in the same voice channel as Playify to use the web UI.",
+def _profile(payload: dict[str, Any]) -> dict[str, Any]:
+    """Display data from the OAuth session, used when the member cache is cold."""
+    return {
+        "name": payload.get("name") or payload.get("username") or "",
+        "avatar": payload.get("avatar") or "",
+    }
+
+
+def _known_guild(ctx: WebUIContext, guild_id: int) -> Any:
+    """The guild object if Playify is actually in it (``None`` otherwise)."""
+    bot = ctx.bot
+    get_guild = getattr(bot, "get_guild", None)
+    if callable(get_guild):
+        guild = get_guild(guild_id)
+        if guild is not None:
+            return guild
+    for guild in getattr(bot, "guilds", None) or []:
+        try:
+            if int(getattr(guild, "id", 0) or 0) == int(guild_id):
+                return guild
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            continue
+    return None
+
+
+def access_denial(ctx: WebUIContext, user_id: int, guild_id: int) -> tuple[str, str]:
+    """Explain *why* access is denied, with an actionable message."""
+    if _known_guild(ctx, guild_id) is None:
+        return (
+            "unknown_guild",
+            f"Playify is not in a server with id {guild_id}. Reload the page: an old or "
+            "truncated server id was sent to the bot.",
         )
-    return session
+    channels = connected_channels(ctx.bot)
+    playing_here = next(
+        (channel for channel in channels if str(channel.get("guild_id")) == str(guild_id)),
+        None,
+    )
+    if not channels:
+        return (
+            "bot_not_in_voice",
+            "Playify is not connected to any voice channel right now. "
+            "Start a song with /play in Discord and the panel will unlock on its own.",
+        )
+    if playing_here is None:
+        # The bot is connected *somewhere*, just not in this guild: name the
+        # places so the message is actionable instead of mysterious.
+        places = ", ".join(
+            f"#{channel.get('channel_name') or 'voice'} in {channel.get('guild_name') or 'another server'}"
+            for channel in channels[:3]
+        )
+        suffix = "" if len(channels) <= 3 else f" (+{len(channels) - 3} more)"
+        return (
+            "bot_not_in_this_server",
+            f"Playify is not in a voice channel in this server right now — it is "
+            f"playing in {places}{suffix}. Join that channel there to use the panel, "
+            "or run /play in a voice channel here to start playing in this server.",
+        )
+    channel_name = playing_here.get("channel_name") or "voice"
+    return (
+        "not_in_channel",
+        f"Join the voice channel “{channel_name}” to control the player.",
+    )
+
+
+def require_access(ctx: WebUIContext, payload: dict[str, Any], guild_id: int):
+    """Resolve the visitor's voice session, with a precise reason when refused."""
+    user_id = _user_id(payload)
+    profile = _profile(payload)
+    sessions = resolve_sessions(ctx.bot, user_id, profile)
+    for session in sessions:
+        if session.guild_id == guild_id:
+            return session
+
+    # Stale/truncated guild id in the page (browsers cannot represent 19-digit
+    # snowflakes exactly): if the visitor has exactly one eligible session, that
+    # is obviously the one they mean, so use it instead of failing.
+    if _known_guild(ctx, guild_id) is None and len(sessions) == 1:
+        logger.info(
+            "Web UI: unknown guild %s for user %s, falling back to guild %s",
+            guild_id,
+            user_id,
+            sessions[0].guild_id,
+        )
+        return sessions[0]
+
+    reason, message = access_denial(ctx, user_id, guild_id)
+    logger.info(
+        "Web UI access denied (%s) for user %s in guild %s — bot voice channels: %s",
+        reason,
+        user_id,
+        guild_id,
+        [channel.get("channel_name") for channel in connected_channels(ctx.bot)],
+    )
+    raise ApiError(403, reason, message)
 
 
 def _check_rate_limit(user_id: int, action: str) -> None:
@@ -342,7 +440,22 @@ async def handle_me(request: web.Request) -> web.Response:
     ctx: WebUIContext = request.app["ctx"]
     payload = require_session(request, ctx)
     user_id = _user_id(payload)
-    sessions = resolve_sessions(ctx.bot, user_id)
+    profile = _profile(payload)
+    sessions = resolve_sessions(ctx.bot, user_id, profile)
+
+    # Without the privileged members intent the guild cache is empty, so the
+    # permissions needed by the server settings box are fetched over REST once.
+    if any(needs_member_fetch(session) for session in sessions):
+        await asyncio.gather(
+            *(
+                ensure_member(ctx.bot, session.guild_id, user_id)
+                for session in sessions
+                if needs_member_fetch(session)
+            ),
+            return_exceptions=True,
+        )
+        sessions = resolve_sessions(ctx.bot, user_id, profile)
+
     return web.json_response(
         {
             "ok": True,
@@ -387,6 +500,188 @@ async def handle_search(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "results": results})
 
 
+def _metrics_authorised(request: web.Request) -> bool:
+    """Optional bearer token: set WEBUI_METRICS_TOKEN to require one."""
+    expected = (os.getenv("WEBUI_METRICS_TOKEN") or "").strip()
+    if not expected:
+        return True
+    header = request.headers.get("Authorization", "")
+    return hmac.compare_digest(header, f"Bearer {expected}")
+
+
+async def handle_metrics(request: web.Request) -> web.Response:
+    """Prometheus scrape endpoint (aggregate numbers only)."""
+    ctx: WebUIContext = request.app["ctx"]
+    if not _metrics_authorised(request):
+        raise ApiError(401, "unauthorized", "A metrics token is required.")
+
+    guilds: list[dict[str, Any]] = []
+    for voice_client in getattr(ctx.bot, "voice_clients", None) or []:
+        channel = getattr(voice_client, "channel", None)
+        guild = getattr(channel, "guild", None) if channel is not None else None
+        if guild is None:
+            continue
+        guild_id = int(getattr(guild, "id", 0) or 0)
+        state = _guild_state(guild_id)
+        player = getattr(state, "music_player", None)
+        guilds.append(
+            {
+                "guild_id": str(guild_id),
+                "listeners": len(getattr(channel, "members", None) or []),
+                "queue": player.queue.qsize() if player is not None else 0,
+                "state": snapshot_module.playback_state(player, voice_client),
+            }
+        )
+
+    samples = metrics.collect(
+        bot=ctx.bot,
+        ctx=ctx,
+        ws_connections=_ws_connections,
+        feeding=error_feed.FEED.snapshot(limit=0),
+        stats=stats.snapshot(),
+        guilds=guilds,
+    )
+    return web.Response(
+        text=metrics.render_prometheus(samples),
+        content_type="text/plain",
+        charset="utf-8",
+    )
+
+
+async def handle_lyrics(request: web.Request) -> web.Response:
+    """Lyrics for the track that is playing, synced when LRCLIB has them."""
+    ctx: WebUIContext = request.app["ctx"]
+    payload = require_session(request, ctx)
+    guild_id = _guild_id(request.query.get("guild_id"))
+    session = require_access(ctx, payload, guild_id)
+    _check_rate_limit(_user_id(payload), "lyrics")
+
+    player = getattr(_guild_state(guild_id), "music_player", None)
+    current = getattr(player, "current_info", None)
+    if not current:
+        raise ApiError(409, "nothing_playing", "Nothing is playing right now.")
+
+    title, artist = actions_module.track_label(current)
+    found = await lyrics_service.lookup(title, artist)
+    return web.json_response(
+        {
+            "ok": True,
+            "title": title,
+            "artist": artist,
+            **found,
+        }
+    )
+
+
+async def handle_thumb(request: web.Request) -> web.Response:
+    """Proxy artwork so the browser never talks to YouTube/Spotify directly.
+
+    Without this every listener's IP address (and, indirectly, their taste in
+    music) is handed to the platform CDNs just to draw a 128 px square.
+    """
+    ctx: WebUIContext = request.app["ctx"]
+    require_session(request, ctx)
+
+    raw = (request.query.get("u") or "").strip()
+    target = thumbnails.allowed_url(raw)
+    if target is None:
+        raise ApiError(400, "bad_thumbnail", "That image is not allowed.")
+
+    data = await thumbnails.fetch(target)
+    if data is None:
+        raise ApiError(502, "thumbnail_failed", "The artwork could not be loaded.")
+
+    body, content_type = data
+    response = web.Response(body=body, content_type=content_type)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
+
+
+async def handle_suggest(request: web.Request) -> web.Response:
+    """Fast query completions (no yt-dlp involved, ~50 ms)."""
+    ctx: WebUIContext = request.app["ctx"]
+    payload = require_session(request, ctx)
+    guild_id = _guild_id(request.query.get("guild_id"))
+    require_access(ctx, payload, guild_id)
+
+    query = (request.query.get("q") or "").strip()
+    try:
+        suggestions = await actions_module.suggest(query)
+    except actions_module.ActionError as exc:
+        raise ApiError(exc.status, "suggest_failed", exc.message) from exc
+    except Exception:  # suggestions are best effort, never break the UI
+        suggestions = []
+    return web.json_response({"ok": True, "suggestions": suggestions})
+
+
+async def handle_diagnostics(request: web.Request) -> web.Response:
+    """Everything the access check sees, for when the gate refuses to open."""
+    ctx: WebUIContext = request.app["ctx"]
+    payload = require_session(request, ctx)
+    user_id = _user_id(payload)
+    requested = request.query.get("guild_id")
+
+    bot = ctx.bot
+    guilds = list(getattr(bot, "guilds", None) or [])
+
+    # The bot's own voice client may be the only source of truth on guilds whose
+    # member cache is cold, so keep both views.
+    clients: dict[str, Any] = {}
+    for voice_client in getattr(bot, "voice_clients", None) or []:
+        channel = getattr(voice_client, "channel", None)
+        guild = getattr(channel, "guild", None) if channel is not None else None
+        if guild is not None:
+            clients[str(getattr(guild, "id", ""))] = voice_client
+
+    voice_states: list[dict[str, Any]] = []
+    for guild in guilds:
+        guild_key = str(getattr(guild, "id", ""))
+        states = getattr(guild, "voice_states", None)
+        state = states.get(user_id) if isinstance(states, dict) else None
+        me = getattr(guild, "me", None)
+        me_voice = getattr(getattr(me, "voice", None), "channel", None)
+        voice_client = clients.get(guild_key) or getattr(guild, "voice_client", None)
+        if me_voice is None and voice_client is not None:
+            me_voice = getattr(voice_client, "channel", None)
+        if state is None and me_voice is None:
+            continue
+        channel = getattr(state, "channel", None)
+        get_member = getattr(guild, "get_member", None)
+        voice_states.append(
+            {
+                "guild_id": guild_key,
+                "guild_name": str(getattr(guild, "name", "")),
+                "you_are_in": getattr(channel, "name", None),
+                "bot_is_in": getattr(me_voice, "name", None),
+                "bot_voice_client_connected": bool(
+                    getattr(voice_client, "is_connected", lambda: False)()
+                ),
+                "member_in_cache": bool(
+                    callable(get_member) and get_member(user_id) is not None
+                ),
+                "voice_state_has_member_object": getattr(state, "member", None) is not None,
+            }
+        )
+
+    requested_known = False
+    if str(requested or "").isdigit():
+        requested_known = _known_guild(ctx, int(requested)) is not None
+
+    sessions = resolve_sessions(bot, user_id, _profile(payload))
+    return web.json_response(
+        {
+            "ok": True,
+            "requested_guild_id": requested,
+            "requested_guild_known": requested_known,
+            "you": {"id": str(user_id), "name": payload.get("name") or ""},
+            "bot_voice_channels": connected_channels(bot),
+            "guild_voice_states": voice_states,
+            "sessions": [session.public() for session in sessions],
+            "bot_guild_ids": [str(getattr(guild, "id", "")) for guild in guilds][:25],
+        }
+    )
+
+
 async def handle_action(request: web.Request) -> web.Response:
     ctx: WebUIContext = request.app["ctx"]
     payload = require_session(request, ctx)
@@ -415,16 +710,22 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
     user_id = _user_id(payload)
     guild_id = _guild_id(request.query.get("guild_id"))
 
-    session = resolve_session(ctx.bot, user_id, guild_id)
+    profile = _profile(payload)
+    session = resolve_session(ctx.bot, user_id, guild_id, profile)
     if session is None:
-        raise ApiError(
-            403,
-            "not_in_voice",
-            "You must be in the same voice channel as Playify to use the web UI.",
-        )
+        # A refused handshake shows up in the browser as "connection refused";
+        # accepting and closing with 4003 plus a reason is far more useful.
+        reason, message = access_denial(ctx, user_id, guild_id)
+        logger.info("Web UI WebSocket denied (%s) for user %s", reason, user_id)
+        denied = web.WebSocketResponse()
+        await denied.prepare(request)
+        await denied.close(code=4003, message=message.encode()[:120])
+        return denied
 
     ws = web.WebSocketResponse(heartbeat=30.0, max_msg_size=256 * 1024)
     await ws.prepare(request)
+    global _ws_connections
+    _ws_connections += 1
     send_lock = asyncio.Lock()
 
     async def send(payload_obj: dict[str, Any]) -> None:
@@ -460,7 +761,7 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
 
     async def pusher() -> None:
         while not stop.is_set():
-            current = resolve_session(ctx.bot, user_id, guild_id)
+            current = resolve_session(ctx.bot, user_id, guild_id, profile)
             if current is None:
                 await send(
                     {
@@ -500,7 +801,7 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
             action = str(incoming.get("action") or "")
             data = incoming.get("data") if isinstance(incoming.get("data"), dict) else {}
 
-            current = resolve_session(ctx.bot, user_id, guild_id)
+            current = resolve_session(ctx.bot, user_id, guild_id, profile)
             if current is None:
                 await send(
                     {
@@ -558,6 +859,7 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
+        _ws_connections = max(0, _ws_connections - 1)
         stop.set()
         for task in tasks:
             task.cancel()
@@ -586,6 +888,11 @@ def create_app(ctx: WebUIContext) -> web.Application:
     app.router.add_get("/api/me", handle_me)
     app.router.add_get("/api/state", handle_state)
     app.router.add_get("/api/search", handle_search)
+    app.router.add_get("/api/suggest", handle_suggest)
+    app.router.add_get("/api/lyrics", handle_lyrics)
+    app.router.add_get("/metrics", handle_metrics)
+    app.router.add_get("/thumb", handle_thumb)
+    app.router.add_get("/api/diagnostics", handle_diagnostics)
     app.router.add_post("/api/action", handle_action)
     app.router.add_get("/ws", handle_websocket)
 
@@ -593,6 +900,26 @@ def create_app(ctx: WebUIContext) -> web.Application:
         return web.FileResponse(STATIC_DIR / "favicon.svg")
 
     app.router.add_get("/favicon.ico", handle_favicon)
+
+    async def handle_manifest(_request: web.Request) -> web.Response:
+        return web.FileResponse(
+            STATIC_DIR / "manifest.webmanifest",
+            headers={"Content-Type": "application/manifest+json"},
+        )
+
+    async def handle_service_worker(_request: web.Request) -> web.Response:
+        # The worker must stay at the origin root to control the whole panel.
+        return web.FileResponse(
+            STATIC_DIR / "sw.js",
+            headers={
+                "Content-Type": "text/javascript",
+                "Service-Worker-Allowed": "/",
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    app.router.add_get("/manifest.webmanifest", handle_manifest)
+    app.router.add_get("/sw.js", handle_service_worker)
     app.router.add_static("/static/", STATIC_DIR, show_index=False, append_version=False)
 
     async def _cleanup(app: web.Application) -> None:

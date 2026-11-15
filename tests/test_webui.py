@@ -235,7 +235,8 @@ async def test_people_outside_the_voice_channel_are_denied(app_bundle):
     )
     assert response.status == 403
     body = await response.json()
-    assert body["error"] == "not_in_voice"
+    assert body["error"] == "not_in_channel"
+    assert "Lounge" in body["message"]
 
     me = await app_bundle.client.get("/api/me", headers=headers)
     assert me.status == 200
@@ -303,6 +304,160 @@ async def test_invalid_guild_and_unknown_action(app_bundle):
         headers=auth_headers(app_bundle.ctx),
     )
     assert response.status == 404
+
+
+async def test_sleep_timer_sets_a_deadline(app_bundle):
+    world = app_bundle.world
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "sleep", "data": {"minutes": 30}},
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 200
+    body = await response.json()
+    assert "30 minutes" in body["message"]
+    deadline = world.player.sleep_deadline
+    assert deadline is not None
+    assert 29 * 60 < deadline - time.time() <= 30 * 60 + 1
+    assert world.player.sleep_task is not None
+    world.player.sleep_task.cancel()
+
+
+async def test_sleep_timer_off_clears_everything(app_bundle):
+    world = app_bundle.world
+    headers = auth_headers(app_bundle.ctx)
+    server._rate_limits.clear()  # two actions back to back
+    await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "sleep", "data": {"minutes": 5}},
+        headers=headers,
+    )
+    server._rate_limits.clear()
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "sleep", "data": {"minutes": 0}},
+        headers=headers,
+    )
+    assert response.status == 200
+    assert world.player.sleep_deadline is None
+
+
+async def test_sleep_timer_rejects_nonsense(app_bundle):
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "sleep", "data": {"minutes": "soon"}},
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 400
+
+
+async def test_the_snapshot_reports_the_remaining_sleep_time(app_bundle, world=None):
+    from src.playify.webui.snapshot import build_snapshot
+
+    bundle_world = app_bundle.world
+    bundle_world.player.sleep_deadline = 2000.0
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": bundle_world.vc})()
+    snapshot = build_snapshot(bundle_world.state, session, now=1000.0)
+    assert snapshot["settings"]["sleep_seconds_left"] == 1000
+
+
+async def test_lyrics_endpoint_returns_synced_lines(app_bundle, monkeypatch):
+    world = app_bundle.world
+    world.player.current_info = {"title": "Nightcall", "artist": "Kavinsky"}
+    seen = {}
+
+    async def fake_lookup(title, artist, fetch=None):
+        seen["title"] = title
+        seen["artist"] = artist
+        return {
+            "synced": True,
+            "lines": [{"time": 1.0, "text": "I'm giving you a night call"}],
+            "plain": "I'm giving you a night call",
+            "cached": False,
+            "found": True,
+        }
+
+    monkeypatch.setattr(server.lyrics_service, "lookup", fake_lookup)
+    response = await app_bundle.client.get(
+        f"/api/lyrics?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    body = await response.json()
+    assert body["synced"] is True
+    assert body["lines"][0]["text"] == "I'm giving you a night call"
+    assert seen == {"title": "Nightcall", "artist": "Kavinsky"}
+
+
+async def test_lyrics_endpoint_requires_a_session(app_bundle):
+    response = await app_bundle.client.get(f"/api/lyrics?guild_id={GUILD_ID}")
+    assert response.status == 401
+
+
+async def test_lyrics_endpoint_needs_a_playing_track(app_bundle):
+    app_bundle.world.player.current_info = None
+    response = await app_bundle.client.get(
+        f"/api/lyrics?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 409
+
+
+async def test_the_artwork_proxy_requires_a_session(app_bundle):
+    response = await app_bundle.client.get("/thumb?u=https%3A%2F%2Fi.scdn.co%2Fimage%2Fabc")
+    assert response.status == 401
+
+
+async def test_the_artwork_proxy_refuses_unknown_hosts(app_bundle):
+    response = await app_bundle.client.get(
+        "/thumb?u=https%3A%2F%2Fevil.example%2Fcover.jpg",
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 400
+
+
+async def test_the_artwork_proxy_serves_and_caches_images(app_bundle, monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_fetch(url, session=None):
+        calls["n"] += 1
+        return b"\x89PNG-art", "image/png"
+
+    monkeypatch.setattr(server.thumbnails, "fetch", fake_fetch)
+    url = "/thumb?u=https%3A%2F%2Fi.scdn.co%2Fimage%2Fabc"
+    headers = auth_headers(app_bundle.ctx)
+    response = await app_bundle.client.get(url, headers=headers)
+    assert response.status == 200
+    assert response.content_type == "image/png"
+    assert response.headers["Cache-Control"].startswith("public")
+    assert await response.read() == b"\x89PNG-art"
+    await app_bundle.client.get(url, headers=headers)
+    assert calls["n"] == 2  # the handler still asks, the cache lives deeper
+
+
+async def test_metrics_endpoint_is_open_without_a_token(app_bundle):
+    response = await app_bundle.client.get("/metrics")
+    assert response.status == 200
+    assert response.content_type.startswith("text/plain")
+    body = await response.text()
+    assert "playify_uptime_seconds" in body
+    assert body.startswith("# HELP")
+
+
+async def test_metrics_endpoint_hides_guild_ids_behind_a_token(app_bundle, monkeypatch):
+    monkeypatch.setenv("WEBUI_METRICS_TOKEN", "s3cret")
+    denied = await app_bundle.client.get("/metrics")
+    assert denied.status == 401
+
+    allowed = await app_bundle.client.get(
+        "/metrics", headers={"Authorization": "Bearer s3cret"}
+    )
+    assert allowed.status == 200
+
+
+async def test_metrics_never_leaks_names_or_titles(app_bundle):
+    app_bundle.world.player.current_info = {"title": "Very Secret Song", "artist": "Nope"}
+    body = await (await app_bundle.client.get("/metrics")).text()
+    assert "Very Secret Song" not in body
+    assert "Lounge" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +550,76 @@ async def test_remove_from_queue(app_bundle):
     assert [item["title"] for item in world.player.queue._queue] == ["B"]
 
 
+async def test_the_panel_can_be_installed_as_an_app(app_bundle):
+    """Manifest, service worker and icons: what browsers require to install it."""
+    manifest = await app_bundle.client.get("/manifest.webmanifest")
+    assert manifest.status == 200
+    assert "manifest" in manifest.headers["Content-Type"]
+    payload = await manifest.json()
+    assert payload["start_url"] == "/"
+    assert payload["display"] == "standalone"
+    assert {icon["sizes"] for icon in payload["icons"]} >= {"192x192", "512x512"}
+
+    worker = await app_bundle.client.get("/sw.js")
+    assert worker.status == 200
+    assert worker.headers["Service-Worker-Allowed"] == "/"
+    assert worker.headers["Cache-Control"] == "no-cache"
+    body = await worker.text()
+    assert "addEventListener(\"fetch\"" in body
+    assert "/api" in body  # API calls are never cached
+
+    for icon in ("icon-192.png", "icon-512.png", "icon-maskable-512.png"):
+        response = await app_bundle.client.get(f"/static/{icon}")
+        assert response.status == 200
+        assert response.headers["Content-Type"] == "image/png"
+
+
+async def test_theme_boot_script_is_served_before_the_app(app_bundle):
+    page = await app_bundle.client.get("/")
+    html = await page.text()
+    assert '/static/theme.js' in html
+    assert html.index("/static/theme.js") < html.index("/static/app.js")
+    assert 'rel="manifest"' in html
+
+    script = await app_bundle.client.get("/static/theme.js")
+    assert script.status == 200
+    body = await script.text()
+    assert "playify.theme" in body
+    assert "prefers-color-scheme" in body
+
+
+async def test_move_reorders_the_queue(app_bundle):
+    world = app_bundle.world
+    for title in ("A", "B", "C"):
+        world.player.queue.put_nowait({"title": title, "url": title.lower()})
+
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "move", "data": {"from": 2, "to": 0}},
+        headers=auth_headers(app_bundle.ctx),
+    )
+
+    assert response.status == 200
+    assert [item["title"] for item in world.player.queue._queue] == ["C", "A", "B"]
+    payload = await response.json()
+    assert "position 1" in payload["message"]
+
+
+async def test_move_rejects_positions_that_do_not_exist(app_bundle):
+    world = app_bundle.world
+    world.player.queue.put_nowait({"title": "A", "url": "a"})
+    server._rate_limits.clear()
+
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "move", "data": {"from": 0, "to": 4}},
+        headers=auth_headers(app_bundle.ctx),
+    )
+
+    assert response.status == 409
+    assert [item["title"] for item in world.player.queue._queue] == ["A"]
+
+
 async def test_server_settings_require_the_manage_server_permission(app_bundle, monkeypatch):
     world = app_bundle.world
 
@@ -438,11 +663,16 @@ async def test_server_settings_require_the_manage_server_permission(app_bundle, 
 
 
 async def test_websocket_requires_voice_membership(app_bundle):
+    """Denied sockets now close with 4003 + a reason instead of a 403 handshake."""
     headers = auth_headers(
         app_bundle.ctx, {"id": "99", "username": "stranger", "global_name": "Stranger"}
     )
-    response = await app_bundle.client.get(f"/ws?guild_id={GUILD_ID}", headers=headers)
-    assert response.status == 403
+    ws = await app_bundle.client.ws_connect(f"/ws?guild_id={GUILD_ID}", headers=headers)
+    message = await asyncio.wait_for(ws.receive(), 3)
+    assert message.type.name == "CLOSE"
+    assert ws.close_code == 4003
+    assert "Lounge" in (message.extra or "")
+    await ws.close()
 
 
 async def test_websocket_streams_state_and_accepts_actions(app_bundle):
@@ -496,6 +726,164 @@ async def test_websocket_revokes_access_when_listener_leaves(app_bundle):
         await ws.close()
 
 
+async def test_bot_missing_from_voice_is_reported_as_such(app_bundle):
+    """No voice connection at all must not look like "join the channel"."""
+    world = app_bundle.world
+    world.bot.voice_clients = []
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 403
+    body = await response.json()
+    assert body["error"] == "bot_not_in_voice"
+    assert "not connected" in body["message"].lower()
+
+
+async def test_membership_survives_an_empty_member_cache(app_bundle):
+    """Voice states are authoritative even when guild.get_member() fails."""
+    import types
+
+    world = app_bundle.world
+    world.channel.members = []
+    world.guild._members = {}
+    world.listener.voice = None
+    world.guild.voice_states = {
+        USER_ID: types.SimpleNamespace(
+            channel=world.channel, member=None, user=world.listener
+        )
+    }
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    body = await response.json()
+    assert body["state"]["session"]["listener_count"] == 1
+
+
+async def test_19_digit_guild_ids_are_handled_exactly(app_bundle):
+    """Discord snowflakes are bigger than a JS Number: keep them as strings."""
+    world = app_bundle.world
+    snowflake = 1137104646637359100
+    world.guild.id = snowflake
+    world.state.guild_id = snowflake
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={snowflake}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    session = (await response.json())["state"]["session"]
+    assert session["guild_id"] == str(snowflake)
+
+
+async def test_unknown_guild_falls_back_to_the_only_session(app_bundle):
+    """A stale/truncated id must not lock the only eligible listener out."""
+    response = await app_bundle.client.get(
+        "/api/state?guild_id=1137104646637359104",  # rounded by the browser
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 200
+    session = (await response.json())["state"]["session"]
+    assert session["guild_id"] == str(GUILD_ID)
+
+
+async def test_diagnostics_explain_the_access_state(app_bundle):
+    response = await app_bundle.client.get(
+        f"/api/diagnostics?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    body = await response.json()
+    assert body["requested_guild_known"] is True
+    assert body["bot_voice_channels"][0]["channel_name"] == "Lounge"
+    assert body["guild_voice_states"][0]["bot_is_in"] == "Lounge"
+    assert body["sessions"][0]["guild_id"] == str(GUILD_ID)
+
+
+async def test_bot_playing_in_another_server_is_explained(app_bundle):
+    """Being connected elsewhere must say *where*, not just "another server"."""
+    world = app_bundle.world
+    other_guild = Guild(7, "Other Server")
+    other_channel = Channel(8, "lofi", other_guild, [])
+    world.bot.voice_clients = [VoiceClient(other_channel)]
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 403
+    message = (await response.json())["message"]
+    assert "Other Server" in message
+    assert "#lofi" in message
+    assert "/play" in message
+
+
+async def test_access_works_with_only_voice_state_user_ids(app_bundle):
+    """The real bot has no members intent: only user ids are available.
+
+    This is the exact production case that used to answer "you are not in the
+    channel" while the listener was sitting in it.
+    """
+    import types
+
+    world = app_bundle.world
+    world.channel.members = []
+    world.guild._members = {}
+    world.listener.voice = None
+    world.guild.voice_states = {
+        USER_ID: types.SimpleNamespace(channel=world.channel, member=None, user=None)
+    }
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    session = (await response.json())["state"]["session"]
+    assert session["channel_name"] == "Lounge"
+    assert session["listener_count"] == 1
+    assert session["listeners"][0]["name"] in {"Listener", "listener"}
+
+
+async def test_zombie_voice_client_still_grants_access(app_bundle):
+    """A dead voice client must not hide the bot from the people in the channel."""
+    import types
+
+    world = app_bundle.world
+    world.vc.connected = False
+    world.guild.me = types.SimpleNamespace(
+        voice=types.SimpleNamespace(channel=world.channel)
+    )
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    session = (await response.json())["state"]["session"]
+    assert session["connected"] is False
+    assert session["channel_name"] == "Lounge"
+
+
+async def test_suggestions_are_proxied_and_access_checked(app_bundle, monkeypatch):
+    async def fake_suggest(query, limit=6):
+        return ["daft punk", "daft punk one more time"]
+
+    monkeypatch.setattr(actions, "suggest", fake_suggest)
+
+    response = await app_bundle.client.get(
+        f"/api/suggest?guild_id={GUILD_ID}&q=daft",
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 200
+    assert (await response.json())["suggestions"][0] == "daft punk"
+
+    stranger = auth_headers(
+        app_bundle.ctx, {"id": "99", "username": "stranger", "global_name": "Stranger"}
+    )
+    denied = await app_bundle.client.get(
+        f"/api/suggest?guild_id={GUILD_ID}&q=daft", headers=stranger
+    )
+    assert denied.status == 403
+
+
 # ---------------------------------------------------------------------------
 # Snapshot helpers
 # ---------------------------------------------------------------------------
@@ -514,6 +902,94 @@ def test_position_interpolation_uses_playback_speed(world: World):
     assert snapshot["playback"]["position"] == pytest.approx(32.0)
 
 
+def test_the_snapshot_carries_the_diagnostics_card(world: World):
+    """The panel shows recent warnings/errors: they must travel with the state."""
+    from src.playify.services import error_feed
+
+    feed = error_feed.FEED
+    feed.clear()
+    feed.record("warning", "playify.spotify", "token about to expire")
+    try:
+        session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+        snapshot = build_snapshot(world.state, session)
+        assert snapshot["diagnostics"]["total"] == 1
+        assert snapshot["diagnostics"]["recent"][0]["message"] == "token about to expire"
+    finally:
+        feed.clear()
+
+
+def test_a_finished_track_stops_counting(world: World):
+    """The panel must not keep adding time once the track is over."""
+    player = world.player
+    player.current_info = {"title": "Song", "duration": 200}
+    player.start_time = 0.0
+    player.playback_started_at = 1000.0  # ten minutes ago
+    world.vc._playing = False
+    world.vc._paused = False
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+    snapshot = build_snapshot(world.state, session, now=1600.0)
+
+    assert snapshot["playback"]["state"] == "idle"
+    assert snapshot["playback"]["position"] == 0.0
+
+
+def test_nothing_playing_reports_no_elapsed_time(world: World):
+    player = world.player
+    player.current_info = None
+    player.start_time = 0.0
+    player.playback_started_at = 1000.0
+    world.vc._playing = False
+    world.vc._paused = False
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+    snapshot = build_snapshot(world.state, session, now=1600.0)
+
+    assert snapshot["playback"]["state"] == "idle"
+    assert snapshot["playback"]["position"] == 0.0
+
+
+def test_a_playing_track_stops_at_its_duration(world: World):
+    player = world.player
+    player.current_info = {"title": "Song", "duration": 180}
+    player.start_time = 0.0
+    player.playback_started_at = 1000.0
+    world.vc._playing = True
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+    snapshot = build_snapshot(world.state, session, now=1600.0)
+
+    assert snapshot["playback"]["state"] == "playing"
+    assert snapshot["playback"]["position"] == 180.0
+
+
+def test_a_paused_track_keeps_the_position_it_reached(world: World):
+    player = world.player
+    player.current_info = {"title": "Song", "duration": 300}
+    player.start_time = 42.0
+    player.playback_started_at = None
+    world.vc._playing = False
+    world.vc._paused = True
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+    snapshot = build_snapshot(world.state, session, now=1600.0)
+
+    assert snapshot["playback"]["state"] == "paused"
+    assert snapshot["playback"]["position"] == 42.0
+
+
+def test_the_snapshot_prefers_the_players_voice_client(world: World):
+    stale = type("VC", (), {"is_playing": lambda self: False, "is_paused": lambda self: False})()
+    world.player.current_info = {"title": "Song", "duration": 100}
+    world.player.playback_started_at = 1000.0
+    world.vc._playing = True
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": stale})()
+    snapshot = build_snapshot(world.state, session, now=1010.0)
+
+    assert snapshot["playback"]["state"] == "playing"
+
+
 def test_keepalive_silence_reports_idle(world: World):
     world.player.is_playing_silence = True
     world.vc._playing = True
@@ -521,3 +997,51 @@ def test_keepalive_silence_reports_idle(world: World):
     snapshot = build_snapshot(world.state, session)
     assert snapshot["playback"]["state"] == "keepalive"
     assert snapshot["playback"]["current"] is None
+
+
+# ---------------------------------------------------------------------------
+# Voice health watchdog
+# ---------------------------------------------------------------------------
+
+
+def test_playback_position_matches_the_player_clock(world: World):
+    from src.playify.services.voice_health import playback_position
+
+    world.player.start_time = 12.0
+    world.player.playback_started_at = 1000.0
+    world.player.playback_speed = 0.5
+    assert playback_position(world.player, now=1010.0) == pytest.approx(17.0)
+
+
+def test_voice_channel_prefers_the_gateway_state(world: World):
+    import types
+
+    from src.playify.services.voice_health import voice_channel_of
+
+    other = types.SimpleNamespace(id=99, name="Elsewhere")
+    world.guild.me = types.SimpleNamespace(voice=types.SimpleNamespace(channel=other))
+    assert voice_channel_of(world.guild) is other
+
+
+def test_watchdog_only_heals_missing_connections(world: World):
+    import types
+
+    from src.playify.services.voice_health import _should_heal
+
+    world.player.current_info = {"title": "Song"}
+    world.guild.me = types.SimpleNamespace(
+        voice=types.SimpleNamespace(channel=world.channel)
+    )
+    world.guild.voice_client = world.vc
+
+    # healthy client: nothing to do
+    assert _should_heal(world.guild, world.state, world.player) is False
+
+    # dead client with a track in progress: heal
+    world.vc.connected = False
+    assert _should_heal(world.guild, world.state, world.player) is True
+
+    # bot not in voice at all (kicked): leave it alone
+    world.guild.me = None
+    world.guild.voice_client = None
+    assert _should_heal(world.guild, world.state, world.player) is False

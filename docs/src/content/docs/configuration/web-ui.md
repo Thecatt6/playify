@@ -11,11 +11,37 @@ It is **locked down by design**: the only way in is a Discord login, and the bot
 
 * Live "now playing" card with artwork, progress, seek and volume.
 * Full queue management: play a track now, remove it, shuffle, or clear everything.
-* Song search with instant results — or paste any link Playify supports (YouTube, SoundCloud, Spotify, Deezer, Apple Music, Tidal, Amazon Music, Bandcamp, direct audio files).
+* Song search that queries **YouTube and Spotify at the same time** (interleaved results, each with a platform badge), instant query completions, a small in-browser result cache so the box feels instant while you type — or paste any link Playify supports (YouTube, SoundCloud, Spotify, Deezer, Apple Music, Tidal, Amazon Music, Bandcamp, direct audio files).
 * Playback toggles: loop, autoplay, 24/7 mode and audio filters.
 * Server settings for managers (`Manage Server`): default volume and kawaii mode, saved to the database like the slash commands do.
-* Listener avatars, connection health and a `Reconnect` action for a laggy voice connection.
+* Listener avatars, connection health and a `Reconnect` action for a laggy voice connection. If the bot's voice client dies while Discord still shows it in the channel, a red banner explains it and the bot repairs the connection by itself within ~25 seconds.
 * Every change is mirrored to the Discord controller message, so both stay in sync.
+* **Drag a track in the queue** to move it: the drop target lights up, and the new order is saved
+  server-side (`move` action) just like removing or jumping.
+* **Keyboard**: <kbd>Space</kbd> play/pause, <kbd>←</kbd>/<kbd>→</kbd> previous/next,
+  <kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd> seek ±5 s, <kbd>M</kbd> mute/unmute, <kbd>/</kbd>
+  search, <kbd>?</kbd> for the full list, <kbd>Esc</kbd> to close panels.
+* **Dark and light theme**, remembered per browser and following the system preference until you
+  pick one with the toggle in the top bar (`/static/theme.js` applies it before the first paint, so
+  there is no white flash).
+* **Installable as an app**: the panel ships a web manifest and a service worker, so *Add to home
+  screen* gives a standalone window on desktop and phone. The worker is network-first: after a
+  deploy, a reload shows the new interface instead of a stale cached one.
+* **Lyrics**: the *Lyrics* section of the player card loads the words from LRCLIB, follows the song
+  and highlights the line being sung; click a line to jump there (<kbd>L</kbd> toggles it). Lookups
+  are cached for an hour per track, misses included, so the service is asked once per song.
+* **Sleep timer**: *15 min / 30 min / 60 min / Off*. When it fires, playback stops, the queue is
+  cleared and the bot leaves the channel (unless 24/7 mode is on); the header of the section shows
+  the time left.
+* **Artwork is proxied**: covers are served by the bot (`/thumb`), not loaded from YouTube or
+  Spotify. Those CDNs never see the listeners' IP addresses, and the panel keeps working on
+  networks that block them. The proxy only accepts https images from the hosts the music platforms
+  actually use, capped at 3 MB and cached for an hour.
+* **Diagnostics for managers**: recent warnings and errors, newest first, in a collapsed section.
+* **Made for phones too**: the layout respects the notch and the home indicator
+  (`viewport-fit=cover` plus `env(safe-area-inset-*)`), the search box scrolls itself above the
+  on-screen keyboard, and pulling down from the top of the page re-reads the state instead of
+  reloading everything.
 
 :::tip
 There are two ways to open it: the **🌐 Web UI** button on the player controller (it appears automatically next to *Lyrics / Karaoke / Show Queue / Jump to…* once the interface is running), or the `/webui` slash command, which replies privately with the link.
@@ -73,6 +99,15 @@ If you use a reverse proxy and change the public URL later, remember to update `
 | Rate limits | Song additions and searches are throttled per user to protect yt-dlp. |
 
 There is no password, no API key and no "admin panel": if you are not in the voice channel, you are nobody.
+
+:::note
+The check reads Discord's **voice states**, not the guild member cache. Playify runs with the default
+intents (no privileged *Server Members* intent), so `guild.members` is usually empty — membership is
+therefore decided from the user id reported by the gateway, and your name/avatar come from the OAuth
+profile. Permissions (`Manage Server`, needed for the server settings box) are fetched once over REST
+when the page loads; enabling the *Server Members* intent in the developer portal only improves the
+listener list (real names and avatars for everybody in the channel).
+:::
 
 ## Configuration reference
 
@@ -151,7 +186,25 @@ The redirect registered in the Discord Developer Portal must match `WEBUI_BASE_U
 <details>
 <summary><b>I stay on "Join Playify's voice channel"</b></summary>
 
-That screen is the access rule working as intended. The bot must be connected to voice; start playback with `/play`, then join that channel. The page unlocks on its own within a few seconds.
+That screen is the access rule working as intended — but the message now tells you *why*:
+
+* *"Playify is not connected to any voice channel"* → start playback with `/play`.
+* *"Playify is listed in #channel but its voice connection is not responding"* → the voice client died; the watchdog rebuilds it within ~25 s, or run `/reconnect`.
+* *"Join the voice channel “X”"* → the bot is in another channel: join X.
+* *"Playify is not in a server with id …"* → the page sent an id the bot does not know (usually a stale tab or a truncated 19-digit id). Reload with `Ctrl+Shift+R`; if you have a single active session the bot already falls back to it by itself.
+* *"Playify is not in a voice channel in this server … it is playing in #channel in Server Y"* → the bot is only connected there. Join that channel in that server, or run `/play` in a voice channel here to move it; if you also have a session in Server Y, the page hops there by itself.
+
+The page refreshes by itself, and access is derived from Discord's voice states, so a cold member cache can never lock you out.
+</details>
+
+<details>
+<summary><b>The browser reports "connection refused" on <code>wss://…/ws</code></b></summary>
+
+If access is denied, Playify now accepts the socket and closes it with code `4003` plus the reason, so
+the browser shows the explanation instead of a refused handshake. Read the message on the page and in
+the bot log (`Web UI access denied (<reason>) for user …`): `bot_not_in_voice` means the bot is not in
+a channel, `not_in_channel` means you are in a different one. A *real* refusal usually means the
+reverse proxy is not forwarding the `Upgrade` header — see the Nginx snippet above.
 </details>
 
 <details>
@@ -178,3 +231,31 @@ pytest -q
 ```
 
 They cover access control, session signing, the snapshot builder, the player actions and the WebSocket live loop — no Discord token required.
+
+The interface itself is tested the same way it is written — plain HTML/JS in jsdom, no build step:
+
+```bash
+cd tests/ui && npm install && npm test
+```
+
+That suite drives the real `index.html` and `app.js`: login, the access gate, search, the
+single-notification rule, the volume readout, theme switching, keyboard shortcuts and queue drag and
+drop. Both suites run in CI on every push (see *Logs, health & dependencies*).
+
+### When the gate refuses to open
+
+Open `/api/diagnostics?guild_id=<id>` in the same browser (you must be signed in). It answers with exactly what the bot sees:
+
+```json
+{
+  "requested_guild_id": "1137104646637359100",
+  "requested_guild_known": true,
+  "bot_voice_channels": [{ "guild_id": "…", "channel_name": "lofi", "connected": true }],
+  "guild_voice_states": [{ "you_are_in": "lofi", "bot_is_in": "lofi", "member_in_cache": false }],
+  "sessions": [{ "guild_id": "…" }]
+}
+```
+
+If `bot_is_in` is `null` the bot is not connected in that server; if `you_are_in` is `null` Discord does not report you in a voice channel (voice states can lag a few seconds after joining). Note the ids are strings on purpose: Discord snowflakes are larger than a JavaScript number, which is also why the front-end never converts them.
+
+For the audio side, the panel is deliberately honest: a volume under 2 % is labelled `muted` in red next to the slider, and `/diagnose` in Discord reports the connection, the FFmpeg process, the volume and the last playback error. Both exist because a silent bot is easy to mistake for a broken one.

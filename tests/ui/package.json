@@ -1,0 +1,12 @@
+{
+  "name": "playify-ui-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "jsdom smoke tests for the Playify web interface",
+  "scripts": {
+    "test": "node run.js"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

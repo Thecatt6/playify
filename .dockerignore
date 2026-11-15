@@ -1,0 +1,25 @@
+# Never bake runtime state, secrets or dev files into the image.
+.git
+.github
+.gitignore
+.dockerignore
+
+data/
+logs/
+*.db
+*.db-shm
+*.db-wal
+*.log
+cookies_*.txt
+.env
+
+# Local development
+tests/
+docs/
+node_modules/
+**/node_modules/
+**/__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+dump_project_context.txt

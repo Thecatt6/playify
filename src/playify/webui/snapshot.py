@@ -9,6 +9,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ..services import error_feed
+
 AUDIO_FILTER_KEYS = [
     "slowed",
     "spedup",
@@ -123,6 +125,19 @@ def playback_position(player: Any, now: float | None = None) -> float:
     return base
 
 
+def _sleep_seconds_left(player: Any, now: float) -> int:
+    """Seconds until the sleep timer fires (0 when it is off)."""
+    deadline = getattr(player, "sleep_deadline", None)
+    if not deadline:
+        return 0
+    return max(0, int(round(float(deadline) - now)))
+
+
+def playback_state(player: Any, vc: Any) -> str:
+    """Public alias: the metrics endpoint needs the same wording as the panel."""
+    return _playback_state(player, vc)
+
+
 def _playback_state(player: Any, vc: Any) -> str:
     if player is None or vc is None:
         return "idle"
@@ -170,20 +185,28 @@ def build_snapshot(
     """Full state of one guild, ready to be serialised and sent to the browser."""
     now = time.time() if now is None else now
     player = getattr(state, "music_player", None)
-    vc = getattr(session, "voice_client", None)
-    if vc is None:
-        vc = getattr(player, "voice_client", None)
+    # The player's client is the one that emits audio; the session may still
+    # hold an older one after a reconnect.
+    vc = getattr(player, "voice_client", None) or getattr(session, "voice_client", None)
 
     current = track_payload(getattr(player, "current_info", None))
     position = playback_position(player, now)
     duration = float((current or {}).get("duration") or 0)
-    if duration:
-        position = min(position, duration)
 
     active_filters = sorted(getattr(state, "server_filters", set()) or set())
     playback_state = _playback_state(player, vc)
     if current is None and playback_state == "playing":
         playback_state = "idle"
+
+    if current is None:
+        # Nothing to show: the panel must not display a running clock.
+        position = 0.0
+    elif playback_state != "playing":
+        # A paused or finished track keeps the position it reached; only a
+        # playing one advances (otherwise the timer runs past the end).
+        position = float(getattr(player, "start_time", 0) or 0)
+    if duration:
+        position = min(position, duration)
 
     volume = float(getattr(player, "volume", 1.0) or 0.0)
 
@@ -208,6 +231,7 @@ def build_snapshot(
             else None,
         },
         "settings": {
+            "sleep_seconds_left": _sleep_seconds_left(player, now),
             "volume": round(volume * 100),
             "default_volume": round(
                 float(getattr(state, "default_volume", 1.0) or 0.0) * 100
@@ -222,6 +246,7 @@ def build_snapshot(
             {"id": key, "label": FILTER_LABELS.get(key, key.title())}
             for key in AUDIO_FILTER_KEYS
         ],
+        "diagnostics": error_feed.recent(limit=5),
         "capabilities": {
             "can_seek": bool(current) and not bool(getattr(player, "is_current_live", False)),
             "can_skip": bool(current) or bool(queue_payload(player)["count"]),

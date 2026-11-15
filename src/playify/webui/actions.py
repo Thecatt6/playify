@@ -64,7 +64,35 @@ def _voice_client(session: Any, player: Any) -> Any:
     for candidate in (getattr(session, "voice_client", None), getattr(player, "voice_client", None)):
         if _is_connected(candidate):
             return candidate
+    if getattr(session, "connected", True) is False:
+        raise ActionError(
+            "The voice connection dropped. Press “Reconnect” to restore it.",
+            status=409,
+        )
     raise ActionError("Playify is not connected to a voice channel.", status=409)
+
+
+def _resolve_channel(ctx: Any, session: Any, player: Any) -> Any:
+    """Best-effort lookup of the voice channel the bot belongs to."""
+    bot = getattr(ctx, "bot", None)
+    guild = None
+    get_guild = getattr(bot, "get_guild", None)
+    if callable(get_guild):
+        guild = get_guild(getattr(session, "guild_id", 0))
+    channel_id = getattr(session, "channel_id", None)
+    get_channel = getattr(guild, "get_channel", None) if guild is not None else None
+    if callable(get_channel) and channel_id:
+        channel = get_channel(channel_id)
+        if channel is not None:
+            return channel
+    for candidate in (
+        getattr(session, "voice_client", None),
+        getattr(player, "voice_client", None),
+    ):
+        channel = getattr(candidate, "channel", None)
+        if channel is not None:
+            return channel
+    return None
 
 
 def _require_playback(vc: Any) -> None:
@@ -374,30 +402,35 @@ async def _resolve_query(ctx: Any, session: Any, query: str) -> tuple[list[Any],
 # ---------------------------------------------------------------------------
 
 
-async def search(ctx: Any, session: Any, query: str, limit: int = 8) -> list[dict[str, Any]]:
+_SUGGEST_CACHE: dict[str, tuple[float, list[str]]] = {}
+SUGGEST_CACHE_TTL = 300.0
+SUGGEST_URL = "https://suggestqueries.google.com/complete/search"
+
+# Spotify results are tagged so the browser can show a platform pill and pick
+# the right resolver when the track is added.
+SPOTIFY_PLATFORM = "Spotify"
+
+
+def _normalise(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def _dedupe_key(item: dict[str, Any]) -> str:
+    return _normalise(f"{item.get('title') or ''} {item.get('artist') or ''}")
+
+
+async def _search_youtube(query: str, limit: int) -> list[dict[str, Any]]:
     from ..core import IS_PUBLIC_VERSION
-    from ..helpers.url_utils import sanitize_query
     from ..services.voice import fetch_video_info_with_retry
 
-    query = sanitize_query(query or "")
-    if len(query) < 2:
-        return []
-    if len(query) > MAX_QUERY_LENGTH:
-        query = query[:MAX_QUERY_LENGTH]
-
-    limit = max(1, min(int(limit), 12))
-    cache_key = (int(session.guild_id), query.lower())
-    cached = _search_cache.get(cache_key)
-    if cached and time.time() - cached[0] < SEARCH_CACHE_TTL:
-        return cached[1][:limit]
-
     prefix = "scsearch" if IS_PUBLIC_VERSION else "ytsearch"
+    platform = "SoundCloud" if IS_PUBLIC_VERSION else "YouTube"
     info = await fetch_video_info_with_retry(
         f"{prefix}{limit}:{query}",
         ydl_opts_override={
             "extract_flat": True,
             "noplaylist": True,
-            "socket_timeout": 10,
+            "socket_timeout": 8,
         },
     )
 
@@ -413,14 +446,177 @@ async def search(ctx: Any, session: Any, query: str, limit: int = 8) -> list[dic
                 "duration": entry.get("duration") or 0,
                 "thumbnail": _thumb(entry.get("thumbnail")),
                 "url": url,
-                "platform": "SoundCloud" if IS_PUBLIC_VERSION else "YouTube",
+                "platform": platform,
             }
         )
+    return results
+
+
+async def _search_spotify(query: str, limit: int) -> list[dict[str, Any]]:
+    """Spotify track search through the official API (fast, ~150 ms)."""
+    from ..core import sp
+
+    if sp is None:
+        return []
+
+    def run() -> Any:
+        return sp.search(q=query, type="track", limit=limit)
+
+    data = await asyncio.to_thread(run)
+    items = (((data or {}).get("tracks") or {}).get("items")) or []
+    results = []
+    for item in items:
+        url = (item.get("external_urls") or {}).get("spotify")
+        if not url:
+            continue
+        album = item.get("album") or {}
+        images = album.get("images") or []
+        results.append(
+            {
+                "title": item.get("name") or "Unknown title",
+                "artist": ", ".join(
+                    artist.get("name")
+                    for artist in (item.get("artists") or [])
+                    if artist.get("name")
+                ),
+                "duration": round((item.get("duration_ms") or 0) / 1000),
+                "thumbnail": (images[0].get("url") if images else None),
+                "url": url,
+                "platform": SPOTIFY_PLATFORM,
+            }
+        )
+    return results
+
+
+def _merge_results(
+    youtube: list[dict[str, Any]], spotify: list[dict[str, Any]], limit: int
+) -> list[dict[str, Any]]:
+    """Interleave both platforms, best match first, without duplicates."""
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index in range(max(len(youtube), len(spotify))):
+        for pool in (youtube, spotify):
+            if index >= len(pool):
+                continue
+            item = pool[index]
+            key = _dedupe_key(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            if len(merged) >= limit:
+                return merged
+    return merged
+
+
+async def search(ctx: Any, session: Any, query: str, limit: int = 8) -> list[dict[str, Any]]:
+    """Search YouTube and Spotify at the same time.
+
+    Both requests run concurrently, so the panel only waits for the slowest one
+    (usually YouTube) instead of summing them up. If a platform fails the other
+    one still fills the list.
+    """
+    from ..helpers.url_utils import sanitize_query
+
+    query = sanitize_query(query or "")
+    if len(query) < 2:
+        return []
+    if len(query) > MAX_QUERY_LENGTH:
+        query = query[:MAX_QUERY_LENGTH]
+
+    limit = max(1, min(int(limit), 12))
+    cache_key = (int(getattr(session, "guild_id", 0) or 0), query.lower())
+    cached = _search_cache.get(cache_key)
+    if cached and time.time() - cached[0] < SEARCH_CACHE_TTL:
+        return cached[1][:limit]
+
+    spotify_limit = max(2, min(limit, 6))
+    outcomes = await asyncio.gather(
+        _search_youtube(query, limit),
+        _search_spotify(query, spotify_limit),
+        return_exceptions=True,
+    )
+
+    youtube: list[dict[str, Any]] = []
+    spotify: list[dict[str, Any]] = []
+    for outcome, bucket, name in zip(outcomes, (youtube, spotify), ("YouTube", "Spotify")):
+        if isinstance(outcome, BaseException):
+            logger.warning("Web UI search on %s failed: %s", name, outcome)
+            continue
+        bucket.extend(outcome)
+
+    results = _merge_results(youtube, spotify, limit)
 
     if len(_search_cache) > 256:
         _search_cache.clear()
     _search_cache[cache_key] = (time.time(), results)
     return results
+
+
+async def suggest(query: str, limit: int = 6) -> list[str]:
+    """Instant query completions straight from YouTube's suggestion endpoint.
+
+    This is what makes the panel feel client-side: suggestions come back in a
+    few dozen milliseconds while the real search is still running.
+    """
+    from ..helpers.url_utils import sanitize_query
+
+    query = sanitize_query(query or "")
+    if len(query) < 2:
+        return []
+    if len(query) > 120:
+        query = query[:120]
+
+    cached = _SUGGEST_CACHE.get(query.lower())
+    if cached and time.time() - cached[0] < SUGGEST_CACHE_TTL:
+        return cached[1][:limit]
+
+    aiohttp = _aiohttp()
+    if aiohttp is None:
+        return []
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=2.5)
+        async with aiohttp.ClientSession(timeout=timeout) as http:
+            async with http.get(
+                SUGGEST_URL,
+                params={"client": "firefox", "ds": "yt", "q": query},
+                headers={"User-Agent": "Playify-WebUI/1.0"},
+            ) as response:
+                if response.status != 200:
+                    return []
+                payload = await response.json(content_type=None)
+    except Exception as exc:  # network hiccup: suggestions are optional
+        logger.debug("Web UI suggestions unavailable: %s", exc)
+        return []
+
+    items: list[str] = []
+    if isinstance(payload, list) and len(payload) > 1 and isinstance(payload[1], list):
+        for entry in payload[1]:
+            if isinstance(entry, str):
+                text = entry.strip()
+            elif isinstance(entry, list) and entry and isinstance(entry[0], str):
+                text = entry[0].strip()
+            else:
+                continue
+            if text and text.lower() not in {item.lower() for item in items}:
+                items.append(text)
+            if len(items) >= limit:
+                break
+
+    if len(_SUGGEST_CACHE) > 512:
+        _SUGGEST_CACHE.clear()
+    _SUGGEST_CACHE[query.lower()] = (time.time(), items)
+    return items
+
+
+def _aiohttp() -> Any:
+    try:
+        import aiohttp
+
+        return aiohttp
+    except Exception:  # pragma: no cover - aiohttp is a hard dependency
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +753,79 @@ async def action_stop(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str,
     return {"ok": True, "message": "Playback stopped and the bot left the channel"}
 
 
+MAX_SLEEP_MINUTES = 600
+
+
+async def _sleep_timer(ctx: Any, session: Any, seconds: float) -> None:
+    """Stop the music when the timer expires (cancelled by a new timer/stop)."""
+    try:
+        await asyncio.sleep(seconds)
+    except asyncio.CancelledError:
+        return
+
+    state = _state(session.guild_id)
+    player = state.music_player
+    player.sleep_deadline = None
+    player.sleep_task = None
+    logger.info("Sleep timer fired in guild %s", session.guild_id)
+
+    vc = _voice_client(session, player)
+    if player.current_task and not player.current_task.done():
+        player.current_task.cancel()
+    try:
+        from ..helpers.common import safe_stop as _safe_stop
+
+        await _safe_stop(vc)
+    except Exception as exc:  # already gone: the point is that it stops
+        logger.debug("Sleep timer could not stop the voice client: %s", exc)
+
+    while not player.queue.empty():
+        try:
+            player.queue.get_nowait()
+        except asyncio.QueueEmpty:  # pragma: no cover - raced with a producer
+            break
+
+    player.current_info = None
+    player.stop_clock()
+    if not getattr(state, "_24_7_mode", False) and _is_connected(vc):
+        try:
+            await vc.disconnect()
+        except Exception as exc:  # the audio is already stopped; log and move on
+            logger.debug("Sleep timer could not disconnect the voice client: %s", exc)
+    _refresh_controller(ctx, session.guild_id)
+
+
+async def action_sleep(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Set (or clear) a sleep timer, in minutes."""
+    player = _player(session.guild_id)
+
+    raw = data.get("minutes", 0)
+    try:
+        minutes = float(raw)
+    except (TypeError, ValueError):
+        raise ActionError("Invalid sleep timer.") from None
+
+    existing = getattr(player, "sleep_task", None)
+    if existing is not None and not existing.done():
+        existing.cancel()
+    player.sleep_task = None
+    player.sleep_deadline = None
+
+    if not minutes or minutes <= 0:
+        _refresh_controller(ctx, session.guild_id)
+        return {"ok": True, "message": "Sleep timer off"}
+
+    minutes = min(float(MAX_SLEEP_MINUTES), max(1.0, minutes))
+    player.sleep_deadline = time.time() + minutes * 60
+    player.sleep_task = asyncio.create_task(_sleep_timer(ctx, session, minutes * 60))
+    _refresh_controller(ctx, session.guild_id)
+    rounded = int(round(minutes))
+    return {
+        "ok": True,
+        "message": f"Playback will stop in {rounded} {'minute' if rounded == 1 else 'minutes'}",
+    }
+
+
 async def action_seek(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str, Any]:
     from ..services.voice import safe_stop
 
@@ -611,8 +880,8 @@ async def action_volume(ctx: Any, session: Any, data: dict[str, Any]) -> dict[st
     if volume_attr is not None:
         try:
             source.volume = player.volume
-        except Exception:  # pragma: no cover - defensive
-            pass
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not apply the volume to the source: %s", exc)
 
     _refresh_controller(ctx, session.guild_id)
     return {"ok": True, "message": f"Volume set to {level}%"}
@@ -777,8 +1046,8 @@ async def action_default_volume(ctx: Any, session: Any, data: dict[str, Any]) ->
     if getattr(source, "volume", None) is not None:
         try:
             source.volume = state.default_volume
-        except Exception:  # pragma: no cover - defensive
-            pass
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not apply the default volume to the source: %s", exc)
 
     _persist_state()
     _refresh_controller(ctx, session.guild_id)
@@ -823,6 +1092,34 @@ async def action_remove(ctx: Any, session: Any, data: dict[str, Any]) -> dict[st
     return {"ok": True, "message": f"Removed “{title}”"}
 
 
+async def action_move(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Move a queued track to another position (drag and drop in the Web UI)."""
+    player = _player(session.guild_id)
+    try:
+        source = int(data.get("from"))
+        target = int(data.get("to"))
+    except (TypeError, ValueError):
+        raise ActionError("Invalid queue positions.") from None
+
+    items = list(player.queue._queue)
+    if not 0 <= source < len(items) or not 0 <= target < len(items):
+        raise ActionError("The queue changed in the meantime, try again.", status=409)
+    if source == target:
+        return {"ok": True, "message": ""}
+
+    moved = items.pop(source)
+    items.insert(target, moved)
+
+    new_queue: asyncio.Queue = asyncio.Queue()
+    for item in items:
+        await new_queue.put(item)
+    player.queue = new_queue
+    _refresh_controller(ctx, session.guild_id)
+
+    title = (track_payload(moved) or {}).get("title", "track")
+    return {"ok": True, "message": f"Moved “{title}” to position {target + 1}"}
+
+
 async def action_clear_queue(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str, Any]:
     player = _player(session.guild_id)
     while not player.queue.empty():
@@ -865,25 +1162,36 @@ async def action_jump(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str,
 
 
 async def action_reconnect(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Tear down the voice client and build a fresh one (zombie-safe).
+
+    This must also work when the current client is already dead: that is exactly
+    when the user needs it, so the channel is resolved from the gateway state
+    instead of from a live voice client.
+    """
     from ..services.playback import play_audio
     from ..services.voice import safe_stop
 
     player = _player(session.guild_id)
-    vc = _voice_client(session, player)
-    channel = getattr(vc, "channel", None)
+    channel = _resolve_channel(ctx, session, player)
     if channel is None:
         raise ActionError("The voice channel could not be resolved.", status=409)
 
-    timestamp = playback_position(player) if player.current_info else 0.0
+    timestamp = playback_position(player) if getattr(player, "current_info", None) else 0.0
     player.is_reconnecting = True
     try:
-        if vc.is_playing():
-            await safe_stop(vc)
-        await vc.disconnect(force=True)
-        await asyncio.sleep(0.75)
-        new_vc = await channel.connect()
+        vc = getattr(session, "voice_client", None) or getattr(player, "voice_client", None)
+        if vc is not None:
+            if _is_connected(vc) and (vc.is_playing() or vc.is_paused()):
+                await safe_stop(vc)
+            try:
+                await vc.disconnect(force=True)
+                await asyncio.sleep(0.5)
+            except Exception as exc:  # already dead: nothing to disconnect
+                logger.warning("Web UI reconnect: disconnect failed: %s", exc)
+        player.voice_client = None
+        new_vc = await channel.connect(reconnect=True, timeout=20.0)
         player.voice_client = new_vc
-        if player.current_info:
+        if getattr(player, "current_info", None):
             player.current_task = asyncio.create_task(
                 play_audio(session.guild_id, seek_time=timestamp, is_a_loop=True)
             )
@@ -899,6 +1207,19 @@ async def action_reconnect(ctx: Any, session: Any, data: dict[str, Any]) -> dict
     return {"ok": True, "message": "Voice connection refreshed"}
 
 
+def track_label(track: Any) -> tuple[str, str]:
+    """Best-effort (title, artist) for a track, for the lyrics lookup."""
+    if not track:
+        return "", ""
+    if isinstance(track, dict):
+        title = track.get("title") or ""
+        artist = track.get("artist") or track.get("original_artist") or ""
+        return str(title).strip(), str(artist).strip()
+    title = getattr(track, "title", "") or ""
+    artist = getattr(track, "artist", "") or getattr(track, "uploader", "") or ""
+    return str(title).strip(), str(artist).strip()
+
+
 _HANDLERS: dict[str, Callable[..., Any]] = {
     "play": action_play,
     "pause": action_pause,
@@ -908,6 +1229,7 @@ _HANDLERS: dict[str, Callable[..., Any]] = {
     "previous": action_previous,
     "stop": action_stop,
     "seek": action_seek,
+    "sleep": action_sleep,
     "volume": action_volume,
     "loop": action_loop,
     "autoplay": action_autoplay,
@@ -915,6 +1237,7 @@ _HANDLERS: dict[str, Callable[..., Any]] = {
     "filter": action_filter,
     "mode24_7": action_mode_247,
     "remove": action_remove,
+    "move": action_move,
     "clear_queue": action_clear_queue,
     "jump": action_jump,
     "reconnect": action_reconnect,

@@ -23,9 +23,11 @@ import random
 from urllib.parse import urlparse, parse_qs, quote_plus
 from cachetools import TTLCache
 import logging
+import logging.handlers
 import requests
 from concurrent.futures import ProcessPoolExecutor
 from src.i18n_translator import I18nTranslator, Locale
+from src.playify.services import error_feed
 from typing import Optional
 import json
 import time
@@ -135,9 +137,48 @@ IS_PUBLIC_VERSION = False
 
 # --- Logging ---
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
+LOG_LEVEL_NAME = (os.getenv("LOG_LEVEL") or "INFO").strip().upper() or "INFO"
+LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
+
+logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
+
+# A background bot is often nobody's terminal: keep a rotating file so the
+# reason for a silent night is still readable the next morning. Rotation caps
+# the disk usage at 10 MB × 5 backups; ``PLAYIFY_LOG_FILE=off`` keeps stdout
+# only, and ``PLAYIFY_LOG_FILE=/path/to.log`` moves it elsewhere.
+LOG_FILE = (os.getenv("PLAYIFY_LOG_FILE") or "").strip()
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUPS = 5
+
+
+def _setup_file_logging() -> Path | None:
+    if LOG_FILE.lower() in {"off", "none", "0", "false"}:
+        return None
+    target = Path(LOG_FILE) if LOG_FILE else PROJECT_ROOT / "logs" / "playify.log"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            target,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUPS,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        handler.setLevel(LOG_LEVEL)
+        logging.getLogger().addHandler(handler)
+        return target
+    except Exception as error:  # pragma: no cover - read-only filesystem
+        logging.getLogger(__name__).warning(
+            "Could not open the log file %s: %s (logging to stdout only)", target, error
+        )
+        return None
+
+
+LOG_PATH = _setup_file_logging()
+# Recent warnings/errors, surfaced in the web panel: the log file is fine for
+# forensics, but people in the voice channel need to know now.
+ERROR_FEED = error_feed.install()
 logger = logging.getLogger(__name__)
 
 if process_pool is None and process_pool_init_error is not None:
@@ -280,7 +321,14 @@ class PlayifyBot(commands.Bot):
         except Exception as e:
             logger.error(f"Error during child processes cleanup: {e}")
 
-        # 5. Stop the Web UI server
+        # 5. Stop the voice watchdog and the Web UI server
+        try:
+            from .services.voice_health import stop_voice_watchdog
+
+            await stop_voice_watchdog()
+        except Exception as e:
+            logger.error(f"Failed to stop the voice watchdog: {e}")
+
         try:
             from .webui.runtime import stop_webui
 
@@ -350,12 +398,28 @@ class MusicPlayer:
         self.is_playing_silence = False
         self.is_resuming_after_silence = False
         self.volume = initial_volume
+        self.stop_clock()
+
         self.controller_message_id = None
         self.duration_hydration_lock = asyncio.Lock()
         self.queue_lock = asyncio.Lock()
         self.silence_management_lock = asyncio.Lock()
         self.is_paused_by_leave = False
         self.manual_stop = False
+        self.sleep_task = None
+        self.sleep_deadline = None
+
+    def stop_clock(self) -> None:
+        """Freeze the progress clock.
+
+        Without this a finished track keeps "playing" for the UI: the panel and
+        the controller add ``now - playback_started_at`` to ``start_time`` and
+        never stop, so the timer runs past the end of the song. It also poisoned
+        the saved playback state, which is why a restart could resume at an
+        impossible timestamp.
+        """
+        self.start_time = 0.0
+        self.playback_started_at = None
 
     async def hydrate_track_info(self, track_info: dict) -> dict:
         """
@@ -566,6 +630,14 @@ async def load_states_on_startup():
                 state._24_7_mode = row["is_24_7"]
                 player.autoplay_enabled = row["autoplay"]
                 player.volume = row["volume"]
+                if not player.volume or float(player.volume) < 0.02:
+                    # A zero volume survives restarts, and looks exactly like "no
+                    # audio" from Discord's side: say it out loud at boot.
+                    logger.warning(
+                        f"[{guild_id}] Restored volume is {float(player.volume or 0) * 100:.0f}% "
+                        "from the database: playback will be inaudible until it is raised "
+                        "with /volume or the Web UI slider."
+                    )
                 try:
                     state.default_volume = row["default_volume"]
                 except (IndexError, KeyError):
