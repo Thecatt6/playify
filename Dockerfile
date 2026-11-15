@@ -26,4 +26,9 @@ COPY . .
 # Web UI (optional, configurable through WEBUI_PORT)
 EXPOSE 8080
 
+# Reports unhealthy when the panel stops answering /healthz (the bot can be
+# "running" with a dead web app). Skipped automatically when WEBUI_ENABLED=false.
+HEALTHCHECK --interval=30s --timeout=6s --start-period=45s --retries=3 \
+    CMD python tools/healthcheck.py || exit 1
+
 CMD ["python", "playify.py"]

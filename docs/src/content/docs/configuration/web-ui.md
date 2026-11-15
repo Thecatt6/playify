@@ -217,6 +217,16 @@ pytest -q
 
 They cover access control, session signing, the snapshot builder, the player actions and the WebSocket live loop — no Discord token required.
 
+The interface itself is tested the same way it is written — plain HTML/JS in jsdom, no build step:
+
+```bash
+cd tests/ui && npm install && npm test
+```
+
+That suite drives the real `index.html` and `app.js`: login, the access gate, search, the
+single-notification rule, the volume readout, theme switching, keyboard shortcuts and queue drag and
+drop. Both suites run in CI on every push (see *Logs, health & dependencies*).
+
 ### When the gate refuses to open
 
 Open `/api/diagnostics?guild_id=<id>` in the same browser (you must be signed in). It answers with exactly what the bot sees:

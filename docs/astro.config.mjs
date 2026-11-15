@@ -44,6 +44,7 @@ export default defineConfig({
 					items: [
 						{ label: 'FAQ', slug: 'troubleshooting/faq' },
 						{ label: 'Backups & Migrations', slug: 'troubleshooting/backups-migrations' },
+						{ label: 'Logs, health & dependencies', slug: 'troubleshooting/logs-and-health' },
 					],
 				},
 				{

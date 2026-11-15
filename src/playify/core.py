@@ -23,6 +23,7 @@ import random
 from urllib.parse import urlparse, parse_qs, quote_plus
 from cachetools import TTLCache
 import logging
+import logging.handlers
 import requests
 from concurrent.futures import ProcessPoolExecutor
 from src.i18n_translator import I18nTranslator, Locale
@@ -135,9 +136,45 @@ IS_PUBLIC_VERSION = False
 
 # --- Logging ---
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
+LOG_LEVEL_NAME = (os.getenv("LOG_LEVEL") or "INFO").strip().upper() or "INFO"
+LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
+
+logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
+
+# A background bot is often nobody's terminal: keep a rotating file so the
+# reason for a silent night is still readable the next morning. Rotation caps
+# the disk usage at 10 MB × 5 backups; ``PLAYIFY_LOG_FILE=off`` keeps stdout
+# only, and ``PLAYIFY_LOG_FILE=/path/to.log`` moves it elsewhere.
+LOG_FILE = (os.getenv("PLAYIFY_LOG_FILE") or "").strip()
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUPS = 5
+
+
+def _setup_file_logging() -> Path | None:
+    if LOG_FILE.lower() in {"off", "none", "0", "false"}:
+        return None
+    target = Path(LOG_FILE) if LOG_FILE else PROJECT_ROOT / "logs" / "playify.log"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            target,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUPS,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        handler.setLevel(LOG_LEVEL)
+        logging.getLogger().addHandler(handler)
+        return target
+    except Exception as error:  # pragma: no cover - read-only filesystem
+        logging.getLogger(__name__).warning(
+            "Could not open the log file %s: %s (logging to stdout only)", target, error
+        )
+        return None
+
+
+LOG_PATH = _setup_file_logging()
 logger = logging.getLogger(__name__)
 
 if process_pool is None and process_pool_init_error is not None:

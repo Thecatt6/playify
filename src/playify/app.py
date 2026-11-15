@@ -21,6 +21,9 @@ if bot.tree.get_command("setup") is None:
 from .events import *
 
 def run():
+    from .services.deps_guard import log_pin_problems
+
+    log_pin_problems()
     init_db()
     bot.start_time = time.time()
     bot.run(os.getenv("DISCORD_TOKEN"))
