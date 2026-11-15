@@ -1,6 +1,15 @@
 """Core playback engine and karaoke sync tasks."""
 
 from ..core import *
+from .playback_flow import (
+    AFTER_DISCONNECTED,
+    AFTER_LOOP,
+    AFTER_PAUSED_BY_LEAVE,
+    AFTER_RECONNECTING,
+    AFTER_REPLAY,
+    AFTER_SEEK,
+    resolve_after_playing,
+)
 from ..helpers.common import *
 from ..helpers.url_utils import *
 from ..models.lazy_search import LazySearchItem
@@ -117,15 +126,26 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
         if error:
             logger.error(f"Error after playing in guild {guild_id}: {error}")
 
-        if music_player.is_paused_by_leave:
+        song_that_finished = music_player.current_info
+        decision = resolve_after_playing(
+            paused_by_leave=music_player.is_paused_by_leave,
+            manual_stop=music_player.manual_stop,
+            voice_connected=bool(
+                music_player.voice_client
+                and music_player.voice_client.is_connected()
+            ),
+            reconnecting=music_player.is_reconnecting,
+            seek_info=music_player.seek_info,
+            loop_current=music_player.loop_current,
+        )
+
+        if decision == AFTER_PAUSED_BY_LEAVE:
             logger.info(
                 f"[{guild_id}] Playback intentionally paused due to empty channel. Not proceeding to next track."
             )
             return
 
-        song_that_finished = music_player.current_info
-
-        if music_player.manual_stop:
+        if decision == AFTER_REPLAY:
             logger.warning(
                 f"[{guild_id}] after_playing: Manual stop detected. Bypassing 24/7 logic."
             )
@@ -137,19 +157,17 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
             )
             return
 
-        if (
-            not music_player.voice_client
-            or not music_player.voice_client.is_connected()
-        ):
+        if decision == AFTER_DISCONNECTED:
             logger.info(
                 f"[{guild_id}] after_playing: Voice client disconnected, stopping playback loop."
             )
             music_player.stop_clock()
             return
-        if music_player.is_reconnecting:
+
+        if decision == AFTER_RECONNECTING:
             return
 
-        if music_player.seek_info is not None:
+        if decision == AFTER_SEEK:
             new_seek_time = music_player.seek_info
             music_player.seek_info = None
             bot.loop.create_task(
@@ -157,7 +175,7 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
             )
             return
 
-        if music_player.loop_current:
+        if decision == AFTER_LOOP:
             bot.loop.create_task(play_audio(guild_id, is_a_loop=True))
             return
 

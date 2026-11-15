@@ -748,6 +748,22 @@ def test_position_interpolation_uses_playback_speed(world: World):
     assert snapshot["playback"]["position"] == pytest.approx(32.0)
 
 
+def test_the_snapshot_carries_the_diagnostics_card(world: World):
+    """The panel shows recent warnings/errors: they must travel with the state."""
+    from src.playify.services import error_feed
+
+    feed = error_feed.FEED
+    feed.clear()
+    feed.record("warning", "playify.spotify", "token about to expire")
+    try:
+        session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+        snapshot = build_snapshot(world.state, session)
+        assert snapshot["diagnostics"]["total"] == 1
+        assert snapshot["diagnostics"]["recent"][0]["message"] == "token about to expire"
+    finally:
+        feed.clear()
+
+
 def test_a_finished_track_stops_counting(world: World):
     """The panel must not keep adding time once the track is over."""
     player = world.player

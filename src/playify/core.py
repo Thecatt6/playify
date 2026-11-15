@@ -27,6 +27,7 @@ import logging.handlers
 import requests
 from concurrent.futures import ProcessPoolExecutor
 from src.i18n_translator import I18nTranslator, Locale
+from src.playify.services import error_feed
 from typing import Optional
 import json
 import time
@@ -175,6 +176,9 @@ def _setup_file_logging() -> Path | None:
 
 
 LOG_PATH = _setup_file_logging()
+# Recent warnings/errors, surfaced in the web panel: the log file is fine for
+# forensics, but people in the voice channel need to know now.
+ERROR_FEED = error_feed.install()
 logger = logging.getLogger(__name__)
 
 if process_pool is None and process_pool_init_error is not None:

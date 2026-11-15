@@ -516,6 +516,9 @@
       }
     }
 
+    /* diagnostics: only managers can act on them, and only if there is news */
+    renderDiagnostics(snapshot.diagnostics || {}, capabilities);
+
     /* queue */
     renderQueue(snapshot.queue || { items: [], count: 0, total_duration: 0 });
 
@@ -602,6 +605,44 @@
       app.dragFrom = null;
       if (!Number.isInteger(from) || from === index || from < 0) return;
       await run("move", { from, to: index }, { silent: true });
+    });
+  };
+
+  const renderDiagnostics = (diagnostics, capabilities) => {
+    const box = $("diagnosticsBox");
+    const list = $("diagnosticsList");
+    const total = Number(diagnostics.total || 0);
+    const visible = Boolean(capabilities && capabilities.is_manager) && total > 0;
+    box.hidden = !visible;
+    if (!visible) {
+      list.textContent = "";
+      return;
+    }
+    const errors = Number(diagnostics.errors || 0);
+    const warnings = Number(diagnostics.warnings || 0);
+    const parts = [];
+    if (errors) parts.push(`${errors} ${errors === 1 ? "error" : "errors"}`);
+    if (warnings) parts.push(`${warnings} ${warnings === 1 ? "warning" : "warnings"}`);
+    $("diagnosticsSummary").textContent = parts.join(", ");
+
+    const now = Number(app.snapshot && app.snapshot.server_time) || Date.now() / 1000;
+    list.textContent = "";
+    (diagnostics.recent || []).forEach((entry) => {
+      const item = document.createElement("li");
+      item.className = "diagnostics-item";
+      item.dataset.level = entry.level === "error" ? "error" : "warning";
+
+      const when = document.createElement("span");
+      when.className = "diagnostics-when";
+      const ago = Math.max(0, now - Number(entry.time || now));
+      when.textContent = ago < 60 ? "just now" : fmtTime(ago) + " ago";
+
+      const message = document.createElement("span");
+      message.className = "diagnostics-message";
+      message.textContent = String(entry.message || "");
+
+      item.append(when, message);
+      list.append(item);
     });
   };
 

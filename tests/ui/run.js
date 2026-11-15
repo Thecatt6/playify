@@ -78,6 +78,7 @@ const snapshot = (overrides = {}) => ({
     filters: [],
   },
   filters: [],
+  diagnostics: { total: 0, warnings: 0, errors: 0, recent: [] },
   capabilities: { can_seek: true, can_skip: true, is_manager: true },
 });
 
@@ -271,6 +272,54 @@ async function mainScenario() {
     lastAction().action === "seek" && lastAction().data.position >= 45,
     JSON.stringify(lastAction())
   );
+
+  console.log("\n[diagnostics]");
+  check("the card is hidden when everything is fine", $("diagnosticsBox").hidden);
+
+  const problems = {
+    ...snapshot(),
+    diagnostics: {
+      total: 3,
+      warnings: 2,
+      errors: 1,
+      recent: [
+        { time: Date.now() / 1000 - 5, level: "error", logger: "playify.voice", message: "Reconnect failed" },
+        { time: Date.now() / 1000 - 90, level: "warning", logger: "playify.spotify", message: "Token expired" },
+      ],
+    },
+  };
+  sockets[0].push({ type: "state", data: problems });
+  await wait(80);
+  check("the card appears for a manager when something failed", !$("diagnosticsBox").hidden);
+  check(
+    "the summary counts errors and warnings",
+    $("diagnosticsSummary").textContent === "1 error, 2 warnings",
+    $("diagnosticsSummary").textContent
+  );
+  const items = $("diagnosticsList").querySelectorAll(".diagnostics-item");
+  check("both recent entries are listed", items.length === 2, String(items.length));
+  check(
+    "the newest entry comes first with its message",
+    items[0].dataset.level === "error" && items[0].textContent.includes("Reconnect failed"),
+    items[0].textContent
+  );
+  check(
+    "a recent entry says just now",
+    items[0].querySelector(".diagnostics-when").textContent === "just now",
+    items[0].querySelector(".diagnostics-when").textContent
+  );
+  check(
+    "an older entry shows how long ago it happened",
+    items[1].querySelector(".diagnostics-when").textContent === "1:30 ago",
+    items[1].querySelector(".diagnostics-when").textContent
+  );
+
+  sockets[0].push({ type: "state", data: { ...problems, capabilities: { ...problems.capabilities, is_manager: false } } });
+  await wait(60);
+  check("a plain listener does not see the internals", $("diagnosticsBox").hidden);
+
+  sockets[0].push({ type: "state", data: snapshot() });
+  await wait(60);
 
   console.log("\n[the clock]");
   const idle = { ...snapshot(), playback: { ...snapshot().playback, state: "idle", current: null, position: 0 } };

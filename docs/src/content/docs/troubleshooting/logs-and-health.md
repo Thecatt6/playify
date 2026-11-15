@@ -44,6 +44,20 @@ The `Dockerfile` declares it as a `HEALTHCHECK` (30 s interval, 45 s grace after
 `docker-compose.yml` declares the same for `docker compose ps`. When `WEBUI_ENABLED=false` there is
 nothing to probe and the check passes immediately, so it never turns into a restart loop.
 
+## The diagnostics card in the panel
+
+Log files are for forensics; the people sitting in the voice channel need to know *now*. Every
+warning and error the bot logs is also kept in a small in-memory ring buffer (50 entries, messages
+truncated to 300 characters) and shipped with the panel state. Managers see it as a **Diagnostics**
+section inside the player card, collapsed until something goes wrong:
+
+* the counter reads `1 error, 2 warnings`;
+* each line shows how long ago it happened and the message, newest first;
+* listeners without the *Manage Server* permission do not see it at all.
+
+Nothing is written to disk twice: this is the same stream that lands in `logs/playify.log`, just
+filtered to `WARNING` and above. Restarting the bot clears it.
+
 ## Dependency drift is reported at startup
 
 `requirements.txt` pins the versions that actually work together — `discord.py>=2.7,<2.8` and
@@ -59,6 +73,24 @@ Fix with: pip install -r requirements.txt
 
 `python tools/doctor.py` prints the same comparison with the installed versions and also runs
 `pip check`. `/diagnose` in Discord shows the live picture, including the DAVE state of the call.
+
+### requirements.txt vs requirements.lock
+
+`requirements.txt` is the file you edit: it carries the ranges and the comments explaining why
+`davey` must stay below 0.2. `requirements.lock` is the frozen resolution of that file — every
+direct and transitive dependency, pinned to an exact version — and it is what the Docker image
+installs. A rebuild six months from now therefore produces the same environment as today, and a bug
+report can name the exact versions that shipped.
+
+After changing `requirements.txt`, regenerate the lock:
+
+```bash
+python -m venv /tmp/lock
+/tmp/lock/bin/pip install --dry-run --report /tmp/lock-report.json -r requirements.txt
+python tools/freeze_lock.py /tmp/lock-report.json > requirements.lock
+```
+
+`pytest` fails if a direct requirement is missing from the lock, so the two cannot drift apart.
 
 ## Continuous integration
 

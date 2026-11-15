@@ -9,6 +9,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ..services import error_feed
+
 AUDIO_FILTER_KEYS = [
     "slowed",
     "spedup",
@@ -230,6 +232,7 @@ def build_snapshot(
             {"id": key, "label": FILTER_LABELS.get(key, key.title())}
             for key in AUDIO_FILTER_KEYS
         ],
+        "diagnostics": error_feed.recent(limit=5),
         "capabilities": {
             "can_seek": bool(current) and not bool(getattr(player, "is_current_live", False)),
             "can_skip": bool(current) or bool(queue_payload(player)["count"]),

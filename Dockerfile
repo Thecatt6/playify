@@ -18,8 +18,10 @@ RUN apt-get update && \
 RUN ln -sf /usr/bin/python3.12 /usr/bin/python && \
     ln -sf /usr/bin/python3.12 /usr/bin/python3
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt --break-system-packages
+# requirements.lock is the frozen resolution of requirements.txt (transitive
+# dependencies included), so every rebuild installs the exact same set.
+COPY requirements.txt requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock --break-system-packages
 
 COPY . .
 
