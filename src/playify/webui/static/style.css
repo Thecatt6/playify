@@ -657,6 +657,8 @@ input[type="range"]:disabled { opacity: 0.35; cursor: default; }
 .volume-row { display: flex; align-items: center; gap: 10px; }
 .volume-icon { width: 16px; height: 16px; color: var(--muted); flex: none; }
 .volume { --fill: 50%; }
+.volume-value.is-muted { color: var(--danger); }
+
 .volume-value {
   font-family: var(--mono);
   font-size: 0.7rem;

@@ -82,6 +82,14 @@
     return m ? `${h} h ${m} min` : `${h} h`;
   };
 
+  /* an almost-zero volume is the #1 cause of "the bot is silent" reports */
+  const setVolumeLabel = (node, value) => {
+    if (!node) return;
+    const level = Number(value ?? 100);
+    node.textContent = level < 2 ? `${level}% · muted` : `${level}%`;
+    node.classList.toggle("is-muted", level < 2);
+  };
+
   const setFill = (input, ratio) => {
     const clamped = Math.max(0, Math.min(1, ratio));
     input.style.setProperty("--fill", `${(clamped * 100).toFixed(2)}%`);
@@ -481,7 +489,7 @@
     const volume = $("volume");
     if (!app.draggingVolume) {
       volume.value = String(settings.volume ?? 100);
-      $("volumeValue").textContent = `${settings.volume ?? 100}%`;
+      setVolumeLabel($("volumeValue"), settings.volume ?? 100);
       setFill(volume, (settings.volume ?? 100) / 200);
     }
 
@@ -501,7 +509,7 @@
       const defaultVolume = $("defaultVolume");
       if (!app.draggingDefaultVolume) {
         defaultVolume.value = String(settings.default_volume ?? 100);
-        $("defaultVolumeValue").textContent = `${settings.default_volume ?? 100}%`;
+        setVolumeLabel($("defaultVolumeValue"), settings.default_volume ?? 100);
         setFill(defaultVolume, (settings.default_volume ?? 100) / 200);
       }
     }
@@ -715,16 +723,12 @@
         return;
       }
       if (payload.type === "result") {
+        // Only hand the answer over: run() owns the feedback, otherwise every
+        // action would toast twice (once here, once there).
         const resolve = app.pending.get(payload.request_id);
         if (resolve) {
           app.pending.delete(payload.request_id);
           resolve(payload);
-        }
-        if (payload.ok) {
-          if (payload.message) toast(payload.message, "ok");
-          (payload.notices || []).forEach((notice) => toast(notice, "ok"));
-        } else if (payload.message) {
-          toast(payload.message, "error");
         }
       }
     };
@@ -801,8 +805,12 @@
     if (button) button.classList.add("is-busy");
     const result = await sendAction(action, data);
     if (button) button.classList.remove("is-busy");
-    if (result.ok === false) toast(result.message || "That action failed.", "error");
-    else if (result.message && !options.silent) toast(result.message, "ok");
+    if (result.ok === false) {
+      toast(result.message || "That action failed.", "error");
+    } else if (!options.silent) {
+      if (result.message) toast(result.message, "ok");
+      (result.notices || []).forEach((notice) => toast(notice, "ok"));
+    }
     return result;
   };
 
@@ -861,7 +869,7 @@
     const volume = $("volume");
     const applyVolume = (commit) => {
       const value = Number(volume.value);
-      $("volumeValue").textContent = `${value}%`;
+      setVolumeLabel($("volumeValue"), value);
       setFill(volume, value / 200);
       clearTimeout(app.volumeTimer);
       if (commit) {

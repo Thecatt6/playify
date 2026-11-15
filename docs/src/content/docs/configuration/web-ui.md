@@ -221,3 +221,5 @@ Open `/api/diagnostics?guild_id=<id>` in the same browser (you must be signed in
 ```
 
 If `bot_is_in` is `null` the bot is not connected in that server; if `you_are_in` is `null` Discord does not report you in a voice channel (voice states can lag a few seconds after joining). Note the ids are strings on purpose: Discord snowflakes are larger than a JavaScript number, which is also why the front-end never converts them.
+
+For the audio side, the panel is deliberately honest: a volume under 2 % is labelled `muted` in red next to the slider, and `/diagnose` in Discord reports the connection, the FFmpeg process, the volume and the last playback error. Both exist because a silent bot is easy to mistake for a broken one.

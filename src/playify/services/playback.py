@@ -15,6 +15,8 @@ async def handle_playback_error(guild_id: int, error: Exception, query_url: str 
     """
     state = get_guild_state(guild_id)
     music_player = state.music_player
+    # Kept for /diagnose: the most common "no audio" report has an error here.
+    music_player.last_error = f"{type(error).__name__}: {error}"[:400]
     if not music_player.text_channel:
         logger.error(
             f"Cannot report error in guild {guild_id}, no text channel available."
@@ -584,7 +586,16 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
 
         music_player.start_time = seek_time
         music_player.playback_started_at = time.time()
-        logger.info(f"[{guild_id}] Playing '{music_player.current_info.get('title', 'Unknown')}'")
+        music_player.last_error = None
+        logger.info(
+            f"[{guild_id}] Playing '{music_player.current_info.get('title', 'Unknown')}' "
+            f"at volume {music_player.volume * 100:.0f}%"
+        )
+        if (music_player.volume or 0) < 0.02:
+            logger.warning(
+                f"[{guild_id}] Volume is {music_player.volume * 100:.0f}%: playback is "
+                "audible only if the volume is raised (/volume or the Web UI slider)."
+            )
 
         state = get_guild_state(guild_id)
         if state.controller_channel_id and not is_a_loop and seek_time == 0:

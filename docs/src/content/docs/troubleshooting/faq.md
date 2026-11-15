@@ -15,7 +15,11 @@ If the audio is stuttering in Discord, it is almost **always** a network connect
 
 ## The bot is in the voice channel but no audio plays
 
-This has three usual causes, and `python tools/doctor.py` checks all of them at once.
+Run **`/diagnose`** in the channel first: it reports the voice connection, the current source, the
+volume and whether `ffmpeg`/`PyNaCl`/`davey` are installed, in one private embed. If you prefer a
+terminal, `python tools/doctor.py` checks the environment at once.
+
+If `/diagnose` shows everything ✅ and the volume is above 2 %, the cause is one of these:
 
 1. **A dependency is missing.** discord.py needs `PyNaCl` to encrypt voice and `davey` to talk in
    end-to-end encrypted channels, while `ffmpeg` decodes the audio. Look for
@@ -31,7 +35,10 @@ This has three usual causes, and `python tools/doctor.py` checks all of them at 
    connection on its own within ~25 seconds, resuming the track where it stopped. You can force it
    immediately with `/reconnect`, or from the Web UI with the **Reconnect** button that appears in
    the red banner.
-3. **Permissions.** The bot needs *Connect* and *Speak* in that channel, and *Use Voice Activity*
+3. **The volume is at (or near) zero.** Playify shows `0% · muted` in the Web UI when the volume is
+   under 2 %, and every `Playing …` log line now carries the volume it started with. Raise it with
+   `/volume 100` (or the slider in the Web UI): at 0 % FFmpeg happily decodes audio nobody hears.
+4. **Permissions.** The bot needs *Connect* and *Speak* in that channel, and *Use Voice Activity*
    (or push-to-talk bypass) if the channel enforces it.
 
 If the log says `Voice support ready (ffmpeg=…, PyNaCl=yes, davey=yes)`, the environment is fine and
