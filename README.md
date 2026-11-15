@@ -5,6 +5,9 @@
 <h1 align="center">Playify V2</h1>
 
 <p align="center">
+  <a href="https://github.com/Thecatt6/playify/actions/workflows/ci.yml">
+    <img src="https://github.com/Thecatt6/playify/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
   <a href="https://github.com/alan7383/playify/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/alan7383/playify?style=for-the-badge&logo=github" alt="License">
   </a>

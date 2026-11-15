@@ -122,13 +122,13 @@ scrape_configs:
 
 ## Continuous integration
 
-Every push and pull request runs two jobs (the definition is in
-`tools/ci/github-workflow.yml`; copy it to `.github/workflows/ci.yml` once, see `tools/ci/README.md`):
+Every push and pull request runs two jobs (`.github/workflows/ci.yml`):
 
 * **python tests** — `pytest` on Python 3.12 with real `ffmpeg`, after installing
   `requirements.txt`;
 * **web ui (jsdom)** — `tests/ui`, which drives the real panel in jsdom: boot and login, the access
-  gate, search, notifications, theme, shortcuts, drag and drop.
+  gate, search, notifications, theme, shortcuts, drag and drop, lyrics, the sleep timer, the
+  diagnostics card, the clock and pull-to-refresh.
 
 ```bash
 python -m pytest -q              # the whole Python suite
