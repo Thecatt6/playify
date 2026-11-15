@@ -12,6 +12,7 @@ from .services.lyrics import *
 from .services.platforms import *
 from .commands.music import *
 from .commands.admin import *
+from .commands.webui import *
 
 if bot.tree.get_command("setup") is None:
     bot.tree.add_command(SetupCommands(bot))

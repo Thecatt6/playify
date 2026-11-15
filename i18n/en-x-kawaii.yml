@@ -469,3 +469,15 @@ presence:
   listening_volume: "/volume !~"
   listening_play: "/play [link] !~"
   playing_servers: "{count} cute servers!~"
+
+# ==============================================================================
+# 16. WEB UI
+# ==============================================================================
+webui:
+  title: "🌐 Playify Web UI !~"
+  description: "Control the player, the queue and all the cute playback options from your browser.\nYou have to sit in the same voice channel as {bot_name} to get in (*o*)"
+  link_label: "Open the web interface"
+  not_configured: "The web UI is not running here (´• ω •`)\nAsk the bot owner to set `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` and `WEBUI_BASE_URL` in the `.env` file, then restart Playify."
+  not_in_voice: "⚠️ You are not in {bot_name}'s voice channel right now — the page unlocks the moment you hop in (.>.)"
+  not_connected: "The bot is not connected to a voice channel yet. Use `/play` in the channel you want, then open the web interface."
+  footer: "Only the listeners in the voice channel get access !~"

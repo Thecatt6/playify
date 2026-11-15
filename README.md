@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <strong>A minimalist, self-hosted Discord music bot with a powerful TUI dashboard.</strong><br><br>
+  <strong>A minimalist, self-hosted Discord music bot with a powerful TUI dashboard and an optional browser interface.</strong><br><br>
   <a href="https://alan7383.github.io/playify/"><strong>Explore the official documentation »</strong></a>
 </p>
 
@@ -30,6 +30,7 @@ Playify has been completely rewritten to provide a seamless, robust, and beautif
 * **Built-in auto-updater**: Keep your bot up to date directly from the dashboard. No `git pull` or manual downloads required.
 * **One-click installer**: Run the setup script and let Playify automatically install Python, download FFmpeg, and set up your `.env` configuration.
 * **In-app settings menu**: Configure your bot's Discord presence, default volumes, and UI customization without touching a text file.
+* **Optional Web UI**: A modern, distraction-free control panel in your browser — songs, queue, seek, filters, 24/7 mode. Locked to the people sitting in the bot's voice channel.
 
 <p align="center">
   <img src="assets/dashboard_preview.png" alt="Playify TUI Dashboard" width="900">
@@ -39,7 +40,7 @@ Playify has been completely rewritten to provide a seamless, robust, and beautif
 
 ### ~ what is this
 
-Playify is an open-source Discord music bot built for simplicity. No web interface, no paywalls, no account needed - just slash commands and music.
+Playify is an open-source Discord music bot built for simplicity. No paywalls, no account needed - just slash commands and music, with an optional browser control panel if you want one.
 
 It supports **YouTube, YouTube Music, SoundCloud, Twitch, Spotify, Deezer, Bandcamp, Apple Music, Tidal, Amazon Music, direct audio links, and local files**.
 
@@ -77,6 +78,27 @@ Type `/play <url or query>` and let it run.
 * **Kawaii mode** - toggle cute kaomoji responses with `/kaomoji`.
 * **Interactive queue pages**, track removal menus, and a seek interface.
 </details>
+
+---
+
+### ~ web interface
+
+Playify can also be driven from the browser: a quiet, minimal dashboard for adding songs, browsing the queue, seeking, changing the volume, toggling 24/7 mode and applying audio filters.
+
+Access is tied to voice, not to an account list: you must be **connected to the same voice channel as the bot**, and access is revoked the moment you leave. Sign-in uses Discord OAuth2, so the bot always knows who is asking.
+
+```env
+WEBUI_ENABLED=true
+WEBUI_BASE_URL=https://music.example.com
+DISCORD_CLIENT_ID=your_client_id
+DISCORD_CLIENT_SECRET=your_client_secret
+```
+
+Add `https://music.example.com/auth/callback` to your application's OAuth2 redirects, restart the bot, then open the URL or type `/webui` in Discord.
+
+<p align="center">
+  <em>Full setup guide (OAuth, reverse proxy, Docker): <a href="https://alan7383.github.io/playify/configuration/web-ui/">Web UI documentation</a></em>
+</p>
 
 ---
 
@@ -121,6 +143,7 @@ Playify natively supports Linux with an automated setup script.
 | `/24_7 <mode>` | Keep the bot in the channel 24/7, even when idle (`normal`, `auto`, `off`). |
 | `/defaultvolume <level>` | Set the volume the bot starts at when it joins (saved per server). |
 | `/reconnect` | Refresh the voice connection without losing your place. |
+| `/webui` | Get a private link to the browser interface. |
 
 *(And many more...)*
 
@@ -141,7 +164,8 @@ Playify natively supports Linux with an automated setup script.
 * **Python** & **discord.py**
 * **yt-dlp** & **FFmpeg**
 * **Rich** (TUI dashboard)
-* **aiohttp** & **SpotifyScraper**
+* **aiohttp** (bot API + Web UI server) & **SpotifyScraper**
+* **Vanilla HTML/CSS/JS** for the Web UI (no build step)
 
 ---
 

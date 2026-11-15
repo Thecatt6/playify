@@ -280,6 +280,14 @@ class PlayifyBot(commands.Bot):
         except Exception as e:
             logger.error(f"Error during child processes cleanup: {e}")
 
+        # 5. Stop the Web UI server
+        try:
+            from .webui.runtime import stop_webui
+
+            await stop_webui()
+        except Exception as e:
+            logger.error(f"Failed to stop the Web UI: {e}")
+
         logger.info("Shutdown cleanup complete. Closing bot...")
         # Call the original close() method to shut down the bot normally
         await super().close()

@@ -15,6 +15,9 @@ syncedlyrics
 lyricsgenius
 python-dotenv  # <-- NEW
 
+# Web UI (also ships with discord.py, pinned here since we import it directly)
+aiohttp
+
 # Utilities
 cachetools
 psutil

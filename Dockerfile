@@ -23,4 +23,7 @@ RUN pip install --no-cache-dir -r requirements.txt --break-system-packages
 
 COPY . .
 
+# Web UI (optional, configurable through WEBUI_PORT)
+EXPOSE 8080
+
 CMD ["python", "playify.py"]
