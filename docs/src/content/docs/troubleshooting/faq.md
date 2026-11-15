@@ -15,7 +15,9 @@ If the audio is stuttering in Discord, it is almost **always** a network connect
 
 ## The bot is in the voice channel but no audio plays
 
-Run **`/diagnose`** in the channel first: it reports the voice connection, the current source, the
+Run **`/diagnose`** in the channel first (or **`!diagnose`** if the slash command has not reached
+your client yet — Discord caches global commands; Playify now also pushes a copy into every server at
+startup and logs the full list as `Slash commands available: …`): it reports the voice connection, the current source, the
 volume and whether `ffmpeg`/`PyNaCl`/`davey` are installed, in one private embed. If you prefer a
 terminal, `python tools/doctor.py` checks the environment at once.
 

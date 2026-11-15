@@ -280,6 +280,27 @@ async def on_ready():
 
         synced = await bot.tree.sync()
         logger.info(f"Synced {len(synced)} slash commands.")
+        names = sorted(command.name for command in synced)
+        logger.info(f"Slash commands available: {', '.join(names)}")
+        if "diagnose" not in names:
+            logger.warning(
+                "The /diagnose command is not registered: the running code is older "
+                "than src/playify/commands/diagnose.py (git pull and restart). "
+                "The prefixed fallback is !diagnose."
+            )
+
+        # Global commands propagate lazily (Discord's cache can take a while), so
+        # push a copy into every joined server: it shows up on the next refresh.
+        for guild in bot.guilds:
+            try:
+                bot.tree.copy_global_to(guild=guild)
+                await bot.tree.sync(guild=guild)
+                logger.info(f"Synced guild commands for {guild.name} ({guild.id}).")
+            except Exception as sync_error:  # pragma: no cover - network/permissions
+                logger.warning(
+                    f"Could not sync guild commands for {guild.name} ({guild.id}): "
+                    f"{sync_error}. The prefixed fallback is !diagnose."
+                )
 
         async def rotate_presence():
             await bot.wait_until_ready()

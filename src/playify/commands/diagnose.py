@@ -4,9 +4,11 @@ The most common "the bot is in the channel but I hear nothing" reports are a
 missing voice dependency (ffmpeg/PyNaCl/davey), a dead voice connection, a
 volume stuck at 0 % or a failed audio source. All of that is visible here, which
 saves a round trip to the logs.
-"""
 
-from __future__ import annotations
+It ships both as a slash command (``/diagnose``) and as a classic prefixed
+command (``!diagnose``, alias ``!diag``): global slash commands can take a while
+before a client sees them, and the prefixed one works immediately.
+"""
 
 from ..core import *
 
@@ -31,29 +33,18 @@ def _ffmpeg_process(voice_client: discord.VoiceClient) -> str:
     return f"exited with code {code}"
 
 
-@bot.tree.command(
-    name="diagnose",
-    description="Check the voice connection, volume and playback dependencies.",
-)
-async def diagnose_command(interaction: discord.Interaction):
-    if not interaction.guild:
-        await interaction.response.send_message(
-            get_messages("command.error.guild_only", interaction.guild_id),
-            ephemeral=True,
-            silent=SILENT_MESSAGES,
-        )
-        return
-
+def build_diagnose_embed(guild: discord.Guild) -> Embed:
+    """Everything we know about voice playback in ``guild``, as one embed."""
     from ..services.voice_health import (
         playback_position,
         voice_dependencies,
         voice_readiness_problems,
     )
 
-    guild_id = interaction.guild.id
+    guild_id = guild.id
     state = get_guild_state(guild_id)
     player = state.music_player
-    voice_client = interaction.guild.voice_client or player.voice_client
+    voice_client = guild.voice_client or player.voice_client
     deps = voice_dependencies()
     problems = voice_readiness_problems()
 
@@ -68,15 +59,18 @@ async def diagnose_command(interaction: discord.Interaction):
     elif not voice_client.is_connected():
         connection = "❌ the voice client is dead (zombie connection)"
     else:
-        connection = f"✅ connected to **{getattr(voice_client.channel, 'name', 'voice')}**"
+        channel_name = getattr(getattr(voice_client, "channel", None), "name", "voice")
+        connection = f"✅ connected to **{channel_name}**"
     embed.add_field(name="Connection", value=connection, inline=False)
 
     # --- playback ---------------------------------------------------------
+    info = player.current_info or {}
     if voice_client is not None and voice_client.is_playing():
         position = playback_position(player)
-        duration = (player.current_info or {}).get("duration") or 0
-        title = (player.current_info or {}).get("title") or "unknown track"
-        playback = f"▶️ **{title}** — {_format_seconds(position)} / {_format_seconds(duration)}"
+        playback = (
+            f"▶️ **{info.get('title') or 'unknown track'}** — "
+            f"{_format_seconds(position)} / {_format_seconds(info.get('duration'))}"
+        )
     elif voice_client is not None and voice_client.is_paused():
         playback = "⏸️ paused"
     else:
@@ -110,7 +104,7 @@ async def diagnose_command(interaction: discord.Interaction):
     if last_error:
         embed.add_field(
             name="Last playback error",
-            value=f"```\n{last_error[:300]}\n```",
+            value=f"```\n{str(last_error)[:300]}\n```",
             inline=False,
         )
 
@@ -136,7 +130,34 @@ async def diagnose_command(interaction: discord.Interaction):
         text="If everything is ✅ but you still hear nothing, check Discord: "
         "server mute/deafen, channel region, or the bot being self-deafened."
     )
+    return embed
+
+
+@bot.tree.command(
+    name="diagnose",
+    description="Check the voice connection, volume and playback dependencies.",
+)
+async def diagnose_command(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message(
+            get_messages("command.error.guild_only", interaction.guild_id),
+            ephemeral=True,
+            silent=SILENT_MESSAGES,
+        )
+        return
 
     await interaction.response.send_message(
-        embed=embed, ephemeral=True, silent=SILENT_MESSAGES
+        embed=build_diagnose_embed(interaction.guild),
+        ephemeral=True,
+        silent=SILENT_MESSAGES,
     )
+
+
+@bot.command(name="diagnose", aliases=["diag"])
+async def diagnose_text(ctx: commands.Context):
+    """Prefix fallback (``!diagnose``): the slash command can lag behind a deploy."""
+    if not ctx.guild:
+        await ctx.send("This command can only be used inside a server.")
+        return
+
+    await ctx.send(embed=build_diagnose_embed(ctx.guild))
