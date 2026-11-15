@@ -112,6 +112,38 @@ def check_voice() -> None:
             "Docker: the bundled image already includes it (rebuild with --build)",
         )
 
+    if ffmpeg:
+        # Decode a generated tone through the same filter playback uses: proves
+        # the decode chain works, not just that the binary exists.
+        try:
+            probe = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-nostdin",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=1",
+                    "-af",
+                    "volumedetect",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            stderr = probe.stderr or ""
+            if "mean_volume:" in stderr:
+                mean = stderr.split("mean_volume:")[1].split("dB")[0].strip()
+                line(OK, f"ffmpeg decodes audio (test tone: mean {mean} dB)")
+            else:
+                line(FAIL, "ffmpeg cannot decode audio", "reinstall ffmpeg")
+        except Exception as error:  # pragma: no cover - environment specific
+            line(WARN, f"could not run the ffmpeg self-test ({type(error).__name__})")
+
     if module_present("nacl"):
         line(OK, f"PyNaCl {package_version('PyNaCl') or ''}".strip())
     else:

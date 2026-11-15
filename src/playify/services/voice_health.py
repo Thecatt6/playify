@@ -32,6 +32,9 @@ HEAL_MAX_ATTEMPTS = 3
 
 _task: asyncio.Task | None = None
 _attempts: dict[int, list[float]] = {}
+# Longest we tolerate a call we cannot encrypt for before rebuilding the session.
+NO_ENCRYPT_GRACE = 30
+_unencrypted_since: dict[Any, float] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +240,43 @@ def playback_position(player: Any, now: float | None = None) -> float:
     return max(0.0, start)
 
 
+def needs_encryption_heal(guild: Any, player: Any) -> bool:
+    """Is the bot playing into an encrypted call it cannot encrypt for?
+
+    In that state the bot sends plain audio, every client silently discards it,
+    and nothing in the logs complains: exactly the "it plays but nobody hears
+    it" report.
+    """
+    voice_client = getattr(guild, "voice_client", None) or getattr(
+        player, "voice_client", None
+    )
+    if voice_client is None or not is_connected(voice_client):
+        return False
+    if not (
+        getattr(player, "current_info", None)
+        or getattr(player, "playback_started_at", None)
+    ):
+        return False
+    state = dave_runtime_state(voice_client)
+    return bool(state["protocol"]) and not state["can_encrypt"]
+
+
+def encryption_heal_due(
+    guild_id: Any, guild: Any, player: Any, now: float | None = None
+) -> bool:
+    """Debounced: only after the problem persisted for ``NO_ENCRYPT_GRACE`` seconds.
+
+    A fresh connection needs a moment to finish the MLS handshake, so healing on
+    the first bad sample would flap.
+    """
+    now = time.time() if now is None else now
+    if not needs_encryption_heal(guild, player):
+        _unencrypted_since.pop(guild_id, None)
+        return False
+    since = _unencrypted_since.setdefault(guild_id, now)
+    return now - since >= NO_ENCRYPT_GRACE
+
+
 def _should_heal(guild: Any, state: Any, player: Any) -> bool:
     """Heal only if the bot is supposed to be in voice but the client is dead."""
     if voice_channel_of(guild) is None:
@@ -339,7 +379,18 @@ async def _watch(bot_instance: Any, interval: float) -> None:
                 if guild is None:
                     continue
                 player = getattr(state, "music_player", None)
-                if player is None or not _should_heal(guild, state, player):
+                if player is None:
+                    continue
+                if encryption_heal_due(guild_id, guild, player):
+                    healed = await heal_guild(
+                        guild,
+                        player,
+                        reason="the DAVE session cannot encrypt, nobody can hear the bot",
+                    )
+                    if healed:
+                        _unencrypted_since.pop(guild_id, None)
+                    continue
+                if not _should_heal(guild, state, player):
                     continue
                 await heal_guild(guild, player)
         except asyncio.CancelledError:

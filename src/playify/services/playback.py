@@ -571,7 +571,17 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
             volume=music_player.volume,
         )
 
-        callback = lambda e: bot.loop.create_task(after_playing(e))
+        def callback(error):
+            """discord.py calls ``after`` from the audio thread, not the loop.
+
+            ``loop.create_task`` from a foreign thread is not thread-safe and
+            could silently drop the coroutine (no next track, no autoplay), so
+            hand it to the loop properly.
+            """
+            try:
+                asyncio.run_coroutine_threadsafe(after_playing(error), bot.loop)
+            except Exception as exc:  # pragma: no cover - shutdown races
+                logger.error(f"[{guild_id}] Could not schedule after_playing: {exc}")
 
         if (
             not music_player.voice_client

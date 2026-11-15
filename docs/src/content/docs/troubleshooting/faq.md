@@ -26,7 +26,9 @@ Playify now pins `davey>=0.1.6,<0.2` and `/diagnose` reports
 pip install "davey>=0.1.6,<0.2"
 ```
 
-`/diagnose` also reports the live **E2EE (DAVE)** state: `protocol 1/1 · session ready · ✅ encrypting: yes`.
+`/diagnose` also reports the live **E2EE (DAVE)** state: `protocol 1/1 · session ready · ✅ encrypting: yes`. When the bot notices it
+is playing into an encrypted call it cannot encrypt for, it now rebuilds the voice session by itself
+after ~30 seconds instead of playing into the void.
 If it says `encrypting: no` the bot is sending plain audio into an encrypted call and nobody can hear
 it: run `/reconnect`. `python tools/doctor.py` has a **Dependency pins** section that compares what is
 installed with `requirements.txt` and runs `pip check`, so the dependency question is settled by one

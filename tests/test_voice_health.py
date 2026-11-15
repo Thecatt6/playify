@@ -290,3 +290,68 @@ def test_dave_runtime_state_survives_broken_internals():
     assert state["protocol"] == 0
     assert state["can_encrypt"] is False
     assert voice_health.dave_runtime_state(types.SimpleNamespace())["protocol"] == 0
+
+
+def _playing_player(connected=True, protocol=1, can_encrypt=False):
+    voice_client = types.SimpleNamespace(
+        is_connected=lambda: connected,
+        _connection=_FakeConnection(
+            protocol=protocol, session=_FakeDaveSession(can_encrypt), can_encrypt=can_encrypt
+        ),
+    )
+    guild = types.SimpleNamespace(voice_client=voice_client, me=None)
+    player = types.SimpleNamespace(
+        voice_client=voice_client, current_info={"title": "x"}, playback_started_at=1.0
+    )
+    return guild, player, voice_client
+
+
+def test_unencrypted_audio_in_an_encrypted_call_is_detected():
+    guild, player, _ = _playing_player(can_encrypt=False)
+
+    assert voice_health.needs_encryption_heal(guild, player) is True
+
+
+def test_encrypted_playback_is_not_healed():
+    guild, player, _ = _playing_player(can_encrypt=True)
+
+    assert voice_health.needs_encryption_heal(guild, player) is False
+
+
+def test_a_plain_call_is_not_healed():
+    guild, player, _ = _playing_player(protocol=0, can_encrypt=False)
+
+    assert voice_health.needs_encryption_heal(guild, player) is False
+
+
+def test_nothing_playing_is_not_healed():
+    guild, player, _ = _playing_player(can_encrypt=False)
+    player.current_info = None
+    player.playback_started_at = None
+
+    assert voice_health.needs_encryption_heal(guild, player) is False
+
+
+def test_encryption_heal_waits_for_the_grace_period(monkeypatch):
+    monkeypatch.setattr(voice_health, "_unencrypted_since", {})
+    guild, player, _ = _playing_player(can_encrypt=False)
+
+    assert voice_health.encryption_heal_due(7, guild, player, now=100.0) is False
+    assert voice_health.encryption_heal_due(7, guild, player, now=110.0) is False
+    assert (
+        voice_health.encryption_heal_due(
+            7, guild, player, now=100.0 + voice_health.NO_ENCRYPT_GRACE
+        )
+        is True
+    )
+
+
+def test_encryption_state_is_forgotten_once_audio_encrypts_again(monkeypatch):
+    monkeypatch.setattr(voice_health, "_unencrypted_since", {})
+    guild, player, voice_client = _playing_player(can_encrypt=False)
+    voice_health.encryption_heal_due(9, guild, player, now=100.0)
+    assert 9 in voice_health._unencrypted_since
+
+    voice_client._connection._can_encrypt = True
+    assert voice_health.encryption_heal_due(9, guild, player, now=200.0) is False
+    assert 9 not in voice_health._unencrypted_since
