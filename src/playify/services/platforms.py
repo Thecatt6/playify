@@ -196,7 +196,11 @@ async def process_deezer_url(url, interaction):
         deezer_share_regex = re.compile(r"^(https?://)?(link\.deezer\.com)/s/.+$")
         if deezer_share_regex.match(url):
             logger.info(f"Detected Deezer share link: {url}. Resolving redirect...")
-            response = requests.head(url, allow_redirects=True, timeout=10)
+            # requests is blocking: in the event loop a slow Deezer reply would
+            # freeze the audio and the web panel for up to ten seconds.
+            response = await asyncio.to_thread(
+                lambda: requests.head(url, allow_redirects=True, timeout=10)
+            )
             response.raise_for_status()
             resolved_url = response.url
             logger.info(f"Resolved to: {resolved_url}")
@@ -219,7 +223,9 @@ async def process_deezer_url(url, interaction):
 
         tracks = []
         if resource_type == "track":
-            response = requests.get(f"{base_api_url}/track/{resource_id}", timeout=10)
+            response = await asyncio.to_thread(
+                requests.get, f"{base_api_url}/track/{resource_id}", timeout=10
+            )
             response.raise_for_status()
             data = response.json()
             if "error" in data:
@@ -237,7 +243,9 @@ async def process_deezer_url(url, interaction):
             fetched_tracks = 0
 
             while next_url:
-                response = requests.get(next_url, timeout=10)
+                response = await asyncio.to_thread(
+                    requests.get, next_url, timeout=10
+                )
                 response.raise_for_status()
                 data = response.json()
 
@@ -269,8 +277,8 @@ async def process_deezer_url(url, interaction):
             )
 
         elif resource_type == "album":
-            response = requests.get(
-                f"{base_api_url}/album/{resource_id}/tracks", timeout=10
+            response = await asyncio.to_thread(
+                requests.get, f"{base_api_url}/album/{resource_id}/tracks", timeout=10
             )
             response.raise_for_status()
             data = response.json()
@@ -288,8 +296,10 @@ async def process_deezer_url(url, interaction):
             logger.info(f"Extracted {len(tracks)} tracks from album {resource_id}")
 
         elif resource_type == "artist":
-            response = requests.get(
-                f"{base_api_url}/artist/{resource_id}/top?limit=10", timeout=10
+            response = await asyncio.to_thread(
+                requests.get,
+                f"{base_api_url}/artist/{resource_id}/top?limit=10",
+                timeout=10,
             )
             response.raise_for_status()
             data = response.json()
@@ -360,6 +370,7 @@ async def process_deezer_url(url, interaction):
         return None
 
 
+import asyncio
 import aiohttp
 import json
 import re

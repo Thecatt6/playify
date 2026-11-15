@@ -10,3 +10,4 @@ ffmpeg.exe
 data/
 .pytest_cache/
 node_modules/
+dump_project_context.txt
