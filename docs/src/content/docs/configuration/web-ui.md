@@ -27,6 +27,17 @@ It is **locked down by design**: the only way in is a Discord login, and the bot
 * **Installable as an app**: the panel ships a web manifest and a service worker, so *Add to home
   screen* gives a standalone window on desktop and phone. The worker is network-first: after a
   deploy, a reload shows the new interface instead of a stale cached one.
+* **Lyrics**: the *Lyrics* section of the player card loads the words from LRCLIB, follows the song
+  and highlights the line being sung; click a line to jump there (<kbd>L</kbd> toggles it). Lookups
+  are cached for an hour per track, misses included, so the service is asked once per song.
+* **Sleep timer**: *15 min / 30 min / 60 min / Off*. When it fires, playback stops, the queue is
+  cleared and the bot leaves the channel (unless 24/7 mode is on); the header of the section shows
+  the time left.
+* **Artwork is proxied**: covers are served by the bot (`/thumb`), not loaded from YouTube or
+  Spotify. Those CDNs never see the listeners' IP addresses, and the panel keeps working on
+  networks that block them. The proxy only accepts https images from the hosts the music platforms
+  actually use, capped at 3 MB and cached for an hour.
+* **Diagnostics for managers**: recent warnings and errors, newest first, in a collapsed section.
 
 :::tip
 There are two ways to open it: the **🌐 Web UI** button on the player controller (it appears automatically next to *Lyrics / Karaoke / Show Queue / Jump to…* once the interface is running), or the `/webui` slash command, which replies privately with the link.

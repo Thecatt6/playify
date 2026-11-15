@@ -69,6 +69,7 @@ const snapshot = (overrides = {}) => ({
   queue: { count: 3, total_duration: 600, tracks: [] },
   history: { count: 0, previous: null },
   settings: {
+    sleep_seconds_left: 0,
     volume: 70,
     default_volume: 80,
     loop: false,
@@ -147,6 +148,7 @@ async function mainScenario() {
   const sockets = [];
   let searchDelays = [];
   let sessionState = snapshot();
+  const lyricsCalls = { n: 0 };
 
   const fetchStub = async (url) => {
     calls.push(String(url));
@@ -176,6 +178,23 @@ async function mainScenario() {
         results: [
           { title: `YT ${query}`, artist: "Artist", duration: 210, thumbnail: "", url: "yt://1", platform: "YouTube" },
           { title: `SP ${query}`, artist: "Artist", duration: 190, thumbnail: "", url: "sp://1", platform: "Spotify" },
+        ],
+      });
+    }
+    if (url.startsWith("/api/lyrics")) {
+      lyricsCalls.n += 1;
+      return jsonResponse({
+        ok: true,
+        title: "Midnight City",
+        artist: "M83",
+        synced: true,
+        cached: false,
+        found: true,
+        plain: "Waiting in a car\nWaiting for a ride",
+        lines: [
+          { time: 10, text: "Waiting in a car" },
+          { time: 40, text: "Waiting for a ride" },
+          { time: 80, text: "The chorus comes back" },
         ],
       });
     }
@@ -318,6 +337,89 @@ async function mainScenario() {
   await wait(60);
   check("a plain listener does not see the internals", $("diagnosticsBox").hidden);
 
+  sockets[0].push({ type: "state", data: snapshot() });
+  await wait(60);
+
+  console.log("\n[sleep timer]");
+  check("no timer hint when the timer is off", $("sleepHint").textContent === "");
+  const chips = $("sleepChips").querySelectorAll("[data-action='sleep']");
+  check("four choices are offered", chips.length === 4, String(chips.length));
+  const beforeSleep = (sockets[0].sent || []).filter((payload) => payload.type === "action").length;
+  chips[1].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await wait(90);
+  const sleepSent = (sockets[0].sent || []).filter((payload) => payload.type === "action").slice(-1)[0];
+  check(
+    "choosing 30 minutes sends one action with the minutes",
+    sleepSent && sleepSent.action === "sleep" && sleepSent.data.minutes === 30,
+    JSON.stringify(sleepSent && sleepSent.data)
+  );
+  check(
+    "one action per chip, not two",
+    (sockets[0].sent || []).filter((payload) => payload.type === "action").length === beforeSleep + 1
+  );
+  sockets[0].push({
+    type: "state",
+    data: { ...snapshot(), settings: { ...snapshot().settings, sleep_seconds_left: 1800 } },
+  });
+  await wait(60);
+  check("the hint counts down", $("sleepHint").textContent === "stops in 30:00", $("sleepHint").textContent);
+  sockets[0].push({ type: "state", data: snapshot() });
+  await wait(60);
+
+  console.log("\n[lyrics]");
+  check("lyrics are not fetched until asked", lyricsCalls.n === 0);
+  $("lyricsBox").open = true;
+  $("lyricsBox").dispatchEvent(new window.Event("toggle"));
+  await wait(120);
+  const lines = $("lyricsLines").querySelectorAll(".lyrics-line");
+  check("the lyrics panel loads the lines", lines.length === 3, String(lines.length));
+  check("the first line is plain text", lines[0].textContent === "Waiting in a car", lines[0].textContent);
+  check("one request only", lyricsCalls.n === 1, String(lyricsCalls.n));
+  check("the panel marks the lyrics as synced", $("lyricsLines").dataset.synced === "true");
+
+  const playingLater = {
+    ...snapshot(),
+    playback: { ...snapshot().playback, state: "playing", position: 45 },
+  };
+  sockets[0].push({ type: "state", data: playingLater });
+  await wait(120);
+  const current = $("lyricsLines").querySelector(".lyrics-line.is-current");
+  check("the line being sung is highlighted", current && current.textContent === "Waiting for a ride", current && current.textContent);
+
+  lines[2].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await wait(90);
+  const seekAction = (sockets[0].sent || []).filter((payload) => payload.type === "action").pop();
+  check(
+    "clicking a line seeks to its timestamp",
+    seekAction && seekAction.action === "seek" && seekAction.data.position === 80,
+    JSON.stringify(seekAction && seekAction.data)
+  );
+
+  $("lyricsBox").open = false;
+  sockets[0].push({ type: "state", data: snapshot() });
+  await wait(60);
+
+  console.log("\n[artwork proxy]");
+  sockets[0].push({
+    type: "state",
+    data: { ...snapshot(), playback: { ...snapshot().playback, current: { ...snapshot().playback.current, thumbnail: "https://i.scdn.co/image/abc" } } },
+  });
+  await wait(80);
+  check(
+    "artwork goes through the bot, not the CDN",
+    $("art").getAttribute("src") === "/thumb?u=https%3A%2F%2Fi.scdn.co%2Fimage%2Fabc",
+    $("art").getAttribute("src")
+  );
+  sockets[0].push({
+    type: "state",
+    data: { ...snapshot(), playback: { ...snapshot().playback, current: { ...snapshot().playback.current, thumbnail: "http://insecure.example/x.jpg" } } },
+  });
+  await wait(60);
+  check(
+    "a non-https artwork url is dropped, not proxied",
+    $("art").getAttribute("src") === null,
+    String($("art").getAttribute("src"))
+  );
   sockets[0].push({ type: "state", data: snapshot() });
   await wait(60);
 

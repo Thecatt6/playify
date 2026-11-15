@@ -125,6 +125,14 @@ def playback_position(player: Any, now: float | None = None) -> float:
     return base
 
 
+def _sleep_seconds_left(player: Any, now: float) -> int:
+    """Seconds until the sleep timer fires (0 when it is off)."""
+    deadline = getattr(player, "sleep_deadline", None)
+    if not deadline:
+        return 0
+    return max(0, int(round(float(deadline) - now)))
+
+
 def _playback_state(player: Any, vc: Any) -> str:
     if player is None or vc is None:
         return "idle"
@@ -218,6 +226,7 @@ def build_snapshot(
             else None,
         },
         "settings": {
+            "sleep_seconds_left": _sleep_seconds_left(player, now),
             "volume": round(volume * 100),
             "default_volume": round(
                 float(getattr(state, "default_volume", 1.0) or 0.0) * 100

@@ -753,6 +753,79 @@ async def action_stop(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str,
     return {"ok": True, "message": "Playback stopped and the bot left the channel"}
 
 
+MAX_SLEEP_MINUTES = 600
+
+
+async def _sleep_timer(ctx: Any, session: Any, seconds: float) -> None:
+    """Stop the music when the timer expires (cancelled by a new timer/stop)."""
+    try:
+        await asyncio.sleep(seconds)
+    except asyncio.CancelledError:
+        return
+
+    state = _state(session.guild_id)
+    player = state.music_player
+    player.sleep_deadline = None
+    player.sleep_task = None
+    logger.info("Sleep timer fired in guild %s", session.guild_id)
+
+    vc = _voice_client(session, player)
+    if player.current_task and not player.current_task.done():
+        player.current_task.cancel()
+    try:
+        from ..helpers.common import safe_stop as _safe_stop
+
+        await _safe_stop(vc)
+    except Exception as exc:  # already gone: the point is that it stops
+        logger.debug("Sleep timer could not stop the voice client: %s", exc)
+
+    while not player.queue.empty():
+        try:
+            player.queue.get_nowait()
+        except asyncio.QueueEmpty:  # pragma: no cover - raced with a producer
+            break
+
+    player.current_info = None
+    player.stop_clock()
+    if not getattr(state, "_24_7_mode", False) and _is_connected(vc):
+        try:
+            await vc.disconnect()
+        except Exception:
+            pass
+    _refresh_controller(ctx, session.guild_id)
+
+
+async def action_sleep(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str, Any]:
+    """Set (or clear) a sleep timer, in minutes."""
+    player = _player(session.guild_id)
+
+    raw = data.get("minutes", 0)
+    try:
+        minutes = float(raw)
+    except (TypeError, ValueError):
+        raise ActionError("Invalid sleep timer.") from None
+
+    existing = getattr(player, "sleep_task", None)
+    if existing is not None and not existing.done():
+        existing.cancel()
+    player.sleep_task = None
+    player.sleep_deadline = None
+
+    if not minutes or minutes <= 0:
+        _refresh_controller(ctx, session.guild_id)
+        return {"ok": True, "message": "Sleep timer off"}
+
+    minutes = min(float(MAX_SLEEP_MINUTES), max(1.0, minutes))
+    player.sleep_deadline = time.time() + minutes * 60
+    player.sleep_task = asyncio.create_task(_sleep_timer(ctx, session, minutes * 60))
+    _refresh_controller(ctx, session.guild_id)
+    rounded = int(round(minutes))
+    return {
+        "ok": True,
+        "message": f"Playback will stop in {rounded} {'minute' if rounded == 1 else 'minutes'}",
+    }
+
+
 async def action_seek(ctx: Any, session: Any, data: dict[str, Any]) -> dict[str, Any]:
     from ..services.voice import safe_stop
 
@@ -1134,6 +1207,19 @@ async def action_reconnect(ctx: Any, session: Any, data: dict[str, Any]) -> dict
     return {"ok": True, "message": "Voice connection refreshed"}
 
 
+def track_label(track: Any) -> tuple[str, str]:
+    """Best-effort (title, artist) for a track, for the lyrics lookup."""
+    if not track:
+        return "", ""
+    if isinstance(track, dict):
+        title = track.get("title") or ""
+        artist = track.get("artist") or track.get("original_artist") or ""
+        return str(title).strip(), str(artist).strip()
+    title = getattr(track, "title", "") or ""
+    artist = getattr(track, "artist", "") or getattr(track, "uploader", "") or ""
+    return str(title).strip(), str(artist).strip()
+
+
 _HANDLERS: dict[str, Callable[..., Any]] = {
     "play": action_play,
     "pause": action_pause,
@@ -1143,6 +1229,7 @@ _HANDLERS: dict[str, Callable[..., Any]] = {
     "previous": action_previous,
     "stop": action_stop,
     "seek": action_seek,
+    "sleep": action_sleep,
     "volume": action_volume,
     "loop": action_loop,
     "autoplay": action_autoplay,

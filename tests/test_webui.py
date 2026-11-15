@@ -306,6 +306,128 @@ async def test_invalid_guild_and_unknown_action(app_bundle):
     assert response.status == 404
 
 
+async def test_sleep_timer_sets_a_deadline(app_bundle):
+    world = app_bundle.world
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "sleep", "data": {"minutes": 30}},
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 200
+    body = await response.json()
+    assert "30 minutes" in body["message"]
+    deadline = world.player.sleep_deadline
+    assert deadline is not None
+    assert 29 * 60 < deadline - time.time() <= 30 * 60 + 1
+    assert world.player.sleep_task is not None
+    world.player.sleep_task.cancel()
+
+
+async def test_sleep_timer_off_clears_everything(app_bundle):
+    world = app_bundle.world
+    headers = auth_headers(app_bundle.ctx)
+    server._rate_limits.clear()  # two actions back to back
+    await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "sleep", "data": {"minutes": 5}},
+        headers=headers,
+    )
+    server._rate_limits.clear()
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "sleep", "data": {"minutes": 0}},
+        headers=headers,
+    )
+    assert response.status == 200
+    assert world.player.sleep_deadline is None
+
+
+async def test_sleep_timer_rejects_nonsense(app_bundle):
+    response = await app_bundle.client.post(
+        "/api/action",
+        json={"guild_id": GUILD_ID, "action": "sleep", "data": {"minutes": "soon"}},
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 400
+
+
+async def test_the_snapshot_reports_the_remaining_sleep_time(app_bundle, world=None):
+    from src.playify.webui.snapshot import build_snapshot
+
+    bundle_world = app_bundle.world
+    bundle_world.player.sleep_deadline = 2000.0
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": bundle_world.vc})()
+    snapshot = build_snapshot(bundle_world.state, session, now=1000.0)
+    assert snapshot["settings"]["sleep_seconds_left"] == 1000
+
+
+async def test_lyrics_endpoint_returns_synced_lines(app_bundle, monkeypatch):
+    world = app_bundle.world
+    world.player.current_info = {"title": "Nightcall", "artist": "Kavinsky"}
+    seen = {}
+
+    async def fake_lookup(title, artist, fetch=None):
+        seen["title"] = title
+        seen["artist"] = artist
+        return {
+            "synced": True,
+            "lines": [{"time": 1.0, "text": "I'm giving you a night call"}],
+            "plain": "I'm giving you a night call",
+            "cached": False,
+            "found": True,
+        }
+
+    monkeypatch.setattr(server.lyrics_service, "lookup", fake_lookup)
+    response = await app_bundle.client.get(
+        f"/api/lyrics?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    body = await response.json()
+    assert body["synced"] is True
+    assert body["lines"][0]["text"] == "I'm giving you a night call"
+    assert seen == {"title": "Nightcall", "artist": "Kavinsky"}
+
+
+async def test_lyrics_endpoint_needs_a_playing_track(app_bundle):
+    app_bundle.world.player.current_info = None
+    response = await app_bundle.client.get(
+        f"/api/lyrics?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 409
+
+
+async def test_the_artwork_proxy_requires_a_session(app_bundle):
+    response = await app_bundle.client.get("/thumb?u=https%3A%2F%2Fi.scdn.co%2Fimage%2Fabc")
+    assert response.status == 401
+
+
+async def test_the_artwork_proxy_refuses_unknown_hosts(app_bundle):
+    response = await app_bundle.client.get(
+        "/thumb?u=https%3A%2F%2Fevil.example%2Fcover.jpg",
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 400
+
+
+async def test_the_artwork_proxy_serves_and_caches_images(app_bundle, monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_fetch(url, session=None):
+        calls["n"] += 1
+        return b"\x89PNG-art", "image/png"
+
+    monkeypatch.setattr(server.thumbnails, "fetch", fake_fetch)
+    url = "/thumb?u=https%3A%2F%2Fi.scdn.co%2Fimage%2Fabc"
+    headers = auth_headers(app_bundle.ctx)
+    response = await app_bundle.client.get(url, headers=headers)
+    assert response.status == 200
+    assert response.content_type == "image/png"
+    assert response.headers["Cache-Control"].startswith("public")
+    assert await response.read() == b"\x89PNG-art"
+    await app_bundle.client.get(url, headers=headers)
+    assert calls["n"] == 2  # the handler still asks, the cache lives deeper
+
+
 # ---------------------------------------------------------------------------
 # OAuth
 # ---------------------------------------------------------------------------

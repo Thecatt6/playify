@@ -406,6 +406,8 @@ class MusicPlayer:
         self.silence_management_lock = asyncio.Lock()
         self.is_paused_by_leave = False
         self.manual_stop = False
+        self.sleep_task = None
+        self.sleep_deadline = None
 
     def stop_clock(self) -> None:
         """Freeze the progress clock.

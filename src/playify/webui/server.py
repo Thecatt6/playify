@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from aiohttp import WSMsgType, web
 
 from . import actions as actions_module
+from . import lyrics_service, thumbnails
 from .access import (
     connected_channels,
     ensure_member,
@@ -494,6 +495,55 @@ async def handle_search(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "results": results})
 
 
+async def handle_lyrics(request: web.Request) -> web.Response:
+    """Lyrics for the track that is playing, synced when LRCLIB has them."""
+    ctx: WebUIContext = request.app["ctx"]
+    payload = require_session(request, ctx)
+    guild_id = _guild_id(request.query.get("guild_id"))
+    session = require_access(ctx, payload, guild_id)
+    _check_rate_limit(_user_id(payload), "lyrics")
+
+    player = getattr(_guild_state(guild_id), "music_player", None)
+    current = getattr(player, "current_info", None)
+    if not current:
+        raise ApiError(409, "nothing_playing", "Nothing is playing right now.")
+
+    title, artist = actions_module.track_label(current)
+    found = await lyrics_service.lookup(title, artist)
+    return web.json_response(
+        {
+            "ok": True,
+            "title": title,
+            "artist": artist,
+            **found,
+        }
+    )
+
+
+async def handle_thumb(request: web.Request) -> web.Response:
+    """Proxy artwork so the browser never talks to YouTube/Spotify directly.
+
+    Without this every listener's IP address (and, indirectly, their taste in
+    music) is handed to the platform CDNs just to draw a 128 px square.
+    """
+    ctx: WebUIContext = request.app["ctx"]
+    require_session(request, ctx)
+
+    raw = (request.query.get("u") or "").strip()
+    target = thumbnails.allowed_url(raw)
+    if target is None:
+        raise ApiError(400, "bad_thumbnail", "That image is not allowed.")
+
+    data = await thumbnails.fetch(target)
+    if data is None:
+        raise ApiError(502, "thumbnail_failed", "The artwork could not be loaded.")
+
+    body, content_type = data
+    response = web.Response(body=body, content_type=content_type)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
+
+
 async def handle_suggest(request: web.Request) -> web.Response:
     """Fast query completions (no yt-dlp involved, ~50 ms)."""
     ctx: WebUIContext = request.app["ctx"]
@@ -783,6 +833,8 @@ def create_app(ctx: WebUIContext) -> web.Application:
     app.router.add_get("/api/state", handle_state)
     app.router.add_get("/api/search", handle_search)
     app.router.add_get("/api/suggest", handle_suggest)
+    app.router.add_get("/api/lyrics", handle_lyrics)
+    app.router.add_get("/thumb", handle_thumb)
     app.router.add_get("/api/diagnostics", handle_diagnostics)
     app.router.add_post("/api/action", handle_action)
     app.router.add_get("/ws", handle_websocket)

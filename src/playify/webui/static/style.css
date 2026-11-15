@@ -733,6 +733,51 @@ input[type="range"]:disabled { opacity: 0.35; cursor: default; }
 
 .summary-hint { color: var(--accent); font-size: 0.72rem; }
 
+/* Lyrics: the current line highlighted, the rest quiet. */
+.lyrics-body { margin-top: 10px; }
+
+.lyrics-state {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.lyrics-lines {
+  list-style: none;
+  margin: 0;
+  padding: 4px 2px 4px 0;
+  max-height: 260px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  display: grid;
+  gap: 6px;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+}
+
+.lyrics-line {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.4;
+  padding: 2px 0;
+  border-radius: 8px;
+  transition: color 0.18s var(--ease), transform 0.18s var(--ease);
+  cursor: default;
+}
+
+.lyrics-lines[data-synced="true"] .lyrics-line { cursor: pointer; }
+.lyrics-lines[data-synced="true"] .lyrics-line:hover { color: var(--text-soft); }
+
+.lyrics-line.is-current {
+  color: var(--text);
+  font-weight: 600;
+  transform: translateX(2px);
+}
+
+.lyrics-line:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
 /* Diagnostics: recent warnings and errors, for the people who can fix them. */
 .diagnostics-list {
   list-style: none;

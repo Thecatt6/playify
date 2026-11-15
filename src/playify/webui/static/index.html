@@ -184,6 +184,24 @@
             </div>
           </details>
 
+          <details class="filters" id="sleepBox">
+            <summary>Sleep timer <span class="summary-hint" id="sleepHint"></span></summary>
+            <div class="chips" id="sleepChips">
+              <button class="chip" data-action="sleep" data-minutes="15" type="button"><span>15 min</span></button>
+              <button class="chip" data-action="sleep" data-minutes="30" type="button"><span>30 min</span></button>
+              <button class="chip" data-action="sleep" data-minutes="60" type="button"><span>60 min</span></button>
+              <button class="chip" data-action="sleep" data-minutes="0" type="button"><span>Off</span></button>
+            </div>
+          </details>
+
+          <details class="filters lyrics" id="lyricsBox">
+            <summary>Lyrics <span class="summary-hint" id="lyricsHint"></span></summary>
+            <div class="lyrics-body">
+              <p class="lyrics-state" id="lyricsState">Open the lyrics to load them.</p>
+              <ol class="lyrics-lines" id="lyricsLines" hidden></ol>
+            </div>
+          </details>
+
           <details class="filters" id="diagnosticsBox" hidden>
             <summary>Diagnostics <span class="summary-hint" id="diagnosticsSummary"></span></summary>
             <ul class="diagnostics-list" id="diagnosticsList"></ul>
@@ -239,6 +257,7 @@
         <div><dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>Previous / next track</dd></div>
         <div><dt><kbd>Shift</kbd> + <kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>Seek back / forward 5 seconds</dd></div>
         <div><dt><kbd>M</kbd></dt><dd>Mute / unmute</dd></div>
+        <div><dt><kbd>L</kbd></dt><dd>Lyrics</dd></div>
         <div><dt><kbd>/</kbd></dt><dd>Search</dd></div>
         <div><dt><kbd>?</kbd></dt><dd>This list</dd></div>
         <div><dt><kbd>Esc</kbd></dt><dd>Close panels</dd></div>
