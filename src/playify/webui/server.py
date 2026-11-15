@@ -186,14 +186,40 @@ def _guild_id(value: Any) -> int:
 
 
 def require_access(ctx: WebUIContext, payload: dict[str, Any], guild_id: int):
-    session = resolve_session(ctx.bot, _user_id(payload), guild_id)
-    if session is None:
+    """Resolve the visitor's voice session, with a precise reason when refused.
+
+    The three failure modes are very different for the user, so they get their
+    own ``reason`` code and message instead of a generic "join the channel".
+    """
+    user_id = _user_id(payload)
+    for session in resolve_sessions(ctx.bot, user_id):
+        if session.guild_id == guild_id:
+            return session
+
+    channels = connected_channels(ctx.bot)
+    playing_here = next(
+        (channel for channel in channels if str(channel.get("guild_id")) == str(guild_id)),
+        None,
+    )
+    if not channels:
         raise ApiError(
             403,
-            "not_in_voice",
-            "You must be in the same voice channel as Playify to use the web UI.",
+            "bot_not_in_voice",
+            "Playify is not connected to any voice channel right now. "
+            "Start a song with /play in Discord and the panel will unlock on its own.",
         )
-    return session
+    if playing_here is None:
+        raise ApiError(
+            403,
+            "bot_not_in_this_server",
+            "Playify is playing in another server. Open the panel from that one.",
+        )
+    channel_name = playing_here.get("channel_name") or "voice"
+    raise ApiError(
+        403,
+        "not_in_channel",
+        f"Join the voice channel “{channel_name}” to control the player.",
+    )
 
 
 def _check_rate_limit(user_id: int, action: str) -> None:
@@ -385,6 +411,23 @@ async def handle_search(request: web.Request) -> web.Response:
     except actions_module.ActionError as exc:
         raise ApiError(exc.status, "search_failed", exc.message) from exc
     return web.json_response({"ok": True, "results": results})
+
+
+async def handle_suggest(request: web.Request) -> web.Response:
+    """Fast query completions (no yt-dlp involved, ~50 ms)."""
+    ctx: WebUIContext = request.app["ctx"]
+    payload = require_session(request, ctx)
+    guild_id = _guild_id(request.query.get("guild_id"))
+    require_access(ctx, payload, guild_id)
+
+    query = (request.query.get("q") or "").strip()
+    try:
+        suggestions = await actions_module.suggest(query)
+    except actions_module.ActionError as exc:
+        raise ApiError(exc.status, "suggest_failed", exc.message) from exc
+    except Exception:  # suggestions are best effort, never break the UI
+        suggestions = []
+    return web.json_response({"ok": True, "suggestions": suggestions})
 
 
 async def handle_action(request: web.Request) -> web.Response:
@@ -586,6 +629,7 @@ def create_app(ctx: WebUIContext) -> web.Application:
     app.router.add_get("/api/me", handle_me)
     app.router.add_get("/api/state", handle_state)
     app.router.add_get("/api/search", handle_search)
+    app.router.add_get("/api/suggest", handle_suggest)
     app.router.add_post("/api/action", handle_action)
     app.router.add_get("/ws", handle_websocket)
 

@@ -129,9 +129,13 @@ class DemoGuild:
         self.name = name
         self.icon = DemoAsset(cover(2, ""))
         self._members: dict[int, DemoMember] = {}
+        self._channels: dict[int, "DemoChannel"] = {}
 
     def get_member(self, member_id: int):
         return self._members.get(member_id)
+
+    def get_channel(self, channel_id: int):
+        return self._channels.get(int(channel_id))
 
 
 class DemoChannel:
@@ -140,6 +144,14 @@ class DemoChannel:
         self.name = name
         self.guild = guild
         self.members = members
+        self.voice_client = None
+
+    async def connect(self, **kwargs):
+        """Mirror of discord.VoiceChannel.connect for the reconnect action."""
+        if self.voice_client is not None:
+            self.voice_client.connected = True
+            return self.voice_client
+        return None
 
 
 class DemoVoiceClient:
@@ -223,6 +235,10 @@ class DemoBot:
         self.user = user
         self.voice_clients = [voice_client]
         self.guilds = [guild]
+        self._guilds = {guild.id: guild}
+
+    def get_guild(self, guild_id):
+        return self._guilds.get(int(guild_id))
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +257,8 @@ for member in (bot_user, listener, giulia, marco, sofia):
 channel = DemoChannel(7, "wine & vinyl", guild, [listener, giulia, marco, sofia, bot_user])
 player = DemoPlayer()
 voice_client = DemoVoiceClient(channel, player)
+channel.voice_client = voice_client
+guild._channels[channel.id] = channel
 player.voice_client = voice_client
 state = DemoState(player)
 bot = DemoBot(bot_user, voice_client, guild)
@@ -482,8 +500,49 @@ def _seed_queue() -> None:
     _start_track(dict(player.queue.get_nowait()))
 
 
+
+def _install_search_demo() -> None:
+    """Fake Spotify search + YouTube suggestions so the demo never hits the network."""
+    from src.playify.webui import actions as actions_module
+
+    async def demo_spotify(query: str, limit: int = 6):
+        await asyncio.sleep(0.12)
+        lowered = query.lower()
+        matches = [
+            info
+            for info in DEMO_TRACKS
+            if lowered in info["title"].lower() or lowered in info["artist"].lower()
+        ]
+        # Different tracks than the YouTube side, otherwise the merge step
+        # (rightly) drops them as duplicates.
+        rest = [info for info in DEMO_TRACKS if info not in matches]
+        matches = rest[: min(limit, 4)]
+        return [
+            {
+                "title": info["title"],
+                "artist": info["artist"],
+                "duration": info["duration"],
+                "thumbnail": info.get("thumbnail"),
+                "url": f"https://open.spotify.com/track/demo{index}",
+                "platform": "Spotify",
+            }
+            for index, info in enumerate(matches[: min(limit, 4)])
+        ]
+
+    async def demo_suggestions(query: str, limit: int = 6):
+        await asyncio.sleep(0.04)
+        base = query.strip()
+        return [f"{base} {suffix}" for suffix in ("remix", "live", "slowed", "lyrics", "8d audio")][
+            : min(limit, 4)
+        ]
+
+    actions_module._search_spotify = demo_spotify
+    actions_module.suggest = demo_suggestions
+
+
 async def main() -> None:
     _install_stubs()
+    _install_search_demo()
     _seed_queue()
 
     from aiohttp import web

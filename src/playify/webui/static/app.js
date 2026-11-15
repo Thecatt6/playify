@@ -38,7 +38,11 @@
     pending: new Map(),
     reqId: 0,
     searchTimer: null,
+    suggestTimer: null,
     searchAbort: null,
+    searchSeq: 0,
+    searchCache: new Map(),
+    suggestions: { query: "", items: [] },
     draggingSeek: false,
     draggingVolume: false,
     draggingDefaultVolume: false,
@@ -173,18 +177,27 @@
     });
   };
 
-  const gateForVoice = () => {
+  const gateForVoice = (message) => {
     const channels = (app.me && app.me.connected_channels) || [];
+    const alive = channels.filter((channel) => channel.connected !== false);
+    const named = (alive.length ? alive : channels)
+      .map((channel) => `#${channel.channel_name} (${channel.guild_name})`)
+      .join(", ");
+
+    let title = "Join Playify's voice channel";
     let text =
+      message ||
       "Playify is not playing in a voice channel with you right now. Join the bot's voice channel and this page will unlock automatically.";
-    if (channels.length) {
-      const list = channels
-        .map((channel) => `#${channel.channel_name} (${channel.guild_name})`)
-        .join(", ");
-      text = `Playify is currently in ${list}. Join that voice channel to unlock the controls. This page refreshes by itself.`;
+
+    if (channels.length && alive.length) {
+      text += ` Playify is currently in ${named}. This page refreshes by itself.`;
+    } else if (channels.length) {
+      title = "Playify's voice connection is down";
+      text = `Playify is listed in ${named} but its voice connection is not responding. The bot rebuilds it automatically within a few seconds — you can also force it with /reconnect in Discord.`;
     }
+
     showGate({
-      title: "Join Playify's voice channel",
+      title,
       text,
       showRetry: true,
       poll: true,
@@ -333,8 +346,20 @@
       .join("")
       .toUpperCase();
 
+  const renderConnBar = (snapshot) => {
+    const bar = $("connBar");
+    if (!bar) return;
+    const session = snapshot.session || {};
+    const healthy = session.connected !== false;
+    bar.hidden = healthy;
+    if (healthy) return;
+    const channel = session.channel_name || "voice";
+    $("connBarText").textContent = `Voice connection to #${channel} dropped — audio is paused until it is rebuilt.`;
+  };
+
   const renderSnapshot = (snapshot) => {
     app.snapshot = snapshot;
+    renderConnBar(snapshot);
     if (snapshot.session) {
       const index = app.sessions.findIndex(
         (session) => Number(session.guild_id) === Number(snapshot.session.guild_id)
@@ -854,16 +879,28 @@
       );
     });
 
+    const connAction = $("connBarAction");
+    if (connAction) {
+      connAction.addEventListener("click", async () => {
+        connAction.classList.add("is-busy");
+        const result = await run("reconnect", {}, { silent: true });
+        connAction.classList.remove("is-busy");
+        if (result.ok) toast("Voice connection restored", "ok");
+      });
+    }
+
     /* search */
     const input = $("searchInput");
     input.addEventListener("input", () => {
       const query = input.value.trim();
       clearTimeout(app.searchTimer);
+      clearTimeout(app.suggestTimer);
       if (query.length < 2) {
         hideResults();
         return;
       }
-      app.searchTimer = setTimeout(() => search(query), 280);
+      app.suggestTimer = setTimeout(() => loadSuggestions(query), 110);
+      app.searchTimer = setTimeout(() => search(query), 260);
     });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape") hideResults();
@@ -931,42 +968,170 @@
 
   /* ---------------------------------------------------------------- search */
 
+  const SEARCH_CACHE_TTL = 120000;
+
   const hideResults = () => {
     const box = $("searchResults");
     box.hidden = true;
     box.replaceChildren();
+    app.searchSeq += 1;
     if (app.searchAbort) app.searchAbort.abort();
     app.searchAbort = null;
   };
 
-  const search = async (query) => {
+  const cacheSearch = (query, results) => {
+    app.searchCache.set(query.toLowerCase(), { at: Date.now(), results });
+    if (app.searchCache.size > 120) {
+      const oldest = app.searchCache.keys().next().value;
+      app.searchCache.delete(oldest);
+    }
+  };
+
+  const cachedSearch = (query) => {
+    const key = query.toLowerCase();
+    const entry = app.searchCache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.at > SEARCH_CACHE_TTL) {
+      app.searchCache.delete(key);
+      return null;
+    }
+    return entry.results;
+  };
+
+  /* Results already in memory are painted without waiting for the network:
+     that is what makes the box feel instantaneous while you type. */
+  const paintResults = (results, options = {}) => {
     const box = $("searchResults");
     box.hidden = false;
-    box.replaceChildren(el("div", { class: "results-state", text: "Searching…" }));
+    const nodes = [];
+
+    if (options.suggestions && options.suggestions.length) {
+      nodes.push(
+        el(
+          "div",
+          { class: "suggest-row" },
+          options.suggestions.map((text) =>
+            el("button", {
+              class: "suggest-chip",
+              type: "button",
+              text,
+              onclick: () => {
+                $("searchInput").value = text;
+                search(text);
+              },
+            })
+          )
+        )
+      );
+    }
+
+    if (options.loading && !results.length) {
+      nodes.push(
+        el("div", { class: "results-state" }, el("span", { class: "spinner" }), "Searching YouTube and Spotify…")
+      );
+    } else if (!results.length && !options.error) {
+      nodes.push(
+        el("div", { class: "results-state", text: "No results. Try another search." })
+      );
+    } else if (options.error) {
+      nodes.push(el("div", { class: "results-state", text: options.error }));
+    } else {
+      for (const result of results) nodes.push(renderResult(result));
+      if (options.loading) {
+        nodes.push(el("div", { class: "results-foot", text: "Refreshing…" }));
+      }
+    }
+
+    box.replaceChildren(...nodes);
+    applySuggestions();
+  };
+
+  const chipRow = (suggestions) =>
+    el(
+      "div",
+      { class: "suggest-row" },
+      suggestions.map((text) =>
+        el("button", {
+          class: "suggest-chip",
+          type: "button",
+          text,
+          onclick: () => {
+            $("searchInput").value = text;
+            search(text);
+          },
+        })
+      )
+    );
+
+  /* Suggestions can land before the results: remember them and re-apply the
+     chips after every repaint, so they never disappear while typing. */
+  const applySuggestions = () => {
+    const box = $("searchResults");
+    const value = $("searchInput").value.trim().toLowerCase();
+    if (!box || box.hidden) return;
+    const entry = app.suggestions;
+    const existing = box.querySelector(".suggest-row");
+    if (existing) existing.remove();
+    if (!entry || !entry.items.length || entry.query !== value) return;
+    box.prepend(chipRow(entry.items));
+  };
+
+  const renderSuggestions = (query, suggestions) => {
+    app.suggestions = { query: query.trim().toLowerCase(), items: suggestions };
+    applySuggestions();
+  };
+
+  const loadSuggestions = async (query) => {
+    try {
+      const response = await fetch(
+        `/api/suggest?guild_id=${encodeURIComponent(app.guildId)}&q=${encodeURIComponent(query)}`,
+        { credentials: "same-origin" }
+      );
+      if (!response.ok) return;
+      const payload = await response.json().catch(() => ({}));
+      const items = (payload.suggestions || [])
+        .filter((text) => text.trim().toLowerCase() !== query.trim().toLowerCase())
+        .slice(0, 5);
+      renderSuggestions(query, items);
+    } catch (_) {
+      /* suggestions are a nicety, never a blocker */
+    }
+  };
+
+  const search = async (rawQuery) => {
+    const query = (rawQuery || "").trim();
+    if (query.length < 2) {
+      hideResults();
+      return;
+    }
+
+    const box = $("searchResults");
+    box.hidden = false;
+    const cached = cachedSearch(query);
+    paintResults(cached || [], { loading: !cached });
+
     if (app.searchAbort) app.searchAbort.abort();
     const controller = new AbortController();
     app.searchAbort = controller;
+    const seq = ++app.searchSeq;
+
+    loadSuggestions(query);
+
     try {
       const response = await fetch(
         `/api/search?guild_id=${encodeURIComponent(app.guildId)}&q=${encodeURIComponent(query)}`,
         { credentials: "same-origin", signal: controller.signal }
       );
       const payload = await response.json().catch(() => ({}));
+      if (seq !== app.searchSeq) return; // a newer keystroke already won
       if (!response.ok) throw new Error(payload.message || "Search failed.");
       const results = payload.results || [];
-      box.replaceChildren();
-      if (!results.length) {
-        box.append(el("div", { class: "results-state", text: "No results. Try another search." }));
-        return;
-      }
-      for (const result of results) {
-        box.append(renderResult(result));
-      }
+      cacheSearch(query, results);
+      paintResults(results, {});
     } catch (error) {
       if (error.name === "AbortError") return;
-      box.replaceChildren(
-        el("div", { class: "results-state", text: error.message || "Search failed." })
-      );
+      if (seq !== app.searchSeq) return;
+      paintResults(cached || [], { error: error.message || "Search failed." });
     }
   };
 
@@ -985,12 +1150,19 @@
         "div",
         { class: "result-body" },
         el("div", { class: "result-title", text: result.title }),
-        el("div", {
-          class: "result-meta",
-          text: [result.artist, result.duration ? fmtTime(result.duration) : ""]
+        el(
+          "div",
+          { class: "result-meta" },
+          result.platform
+            ? el("span", {
+                class: `platform platform-${String(result.platform).toLowerCase()}`,
+                text: result.platform,
+              })
+            : null,
+          [result.artist, result.duration ? fmtTime(result.duration) : ""]
             .filter(Boolean)
-            .join(" · "),
-        })
+            .join(" · ")
+        )
       ),
       el(
         "div",

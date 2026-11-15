@@ -280,7 +280,14 @@ class PlayifyBot(commands.Bot):
         except Exception as e:
             logger.error(f"Error during child processes cleanup: {e}")
 
-        # 5. Stop the Web UI server
+        # 5. Stop the voice watchdog and the Web UI server
+        try:
+            from .services.voice_health import stop_voice_watchdog
+
+            await stop_voice_watchdog()
+        except Exception as e:
+            logger.error(f"Failed to stop the voice watchdog: {e}")
+
         try:
             from .webui.runtime import stop_webui
 

@@ -235,7 +235,8 @@ async def test_people_outside_the_voice_channel_are_denied(app_bundle):
     )
     assert response.status == 403
     body = await response.json()
-    assert body["error"] == "not_in_voice"
+    assert body["error"] == "not_in_channel"
+    assert "Lounge" in body["message"]
 
     me = await app_bundle.client.get("/api/me", headers=headers)
     assert me.status == 200
@@ -496,6 +497,83 @@ async def test_websocket_revokes_access_when_listener_leaves(app_bundle):
         await ws.close()
 
 
+async def test_bot_missing_from_voice_is_reported_as_such(app_bundle):
+    """No voice connection at all must not look like "join the channel"."""
+    world = app_bundle.world
+    world.bot.voice_clients = []
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 403
+    body = await response.json()
+    assert body["error"] == "bot_not_in_voice"
+    assert "not connected" in body["message"].lower()
+
+
+async def test_membership_survives_an_empty_member_cache(app_bundle):
+    """Voice states are authoritative even when guild.get_member() fails."""
+    import types
+
+    world = app_bundle.world
+    world.channel.members = []
+    world.guild._members = {}
+    world.listener.voice = None
+    world.guild.voice_states = {
+        USER_ID: types.SimpleNamespace(
+            channel=world.channel, member=None, user=world.listener
+        )
+    }
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    body = await response.json()
+    assert body["state"]["session"]["listener_count"] == 1
+
+
+async def test_zombie_voice_client_still_grants_access(app_bundle):
+    """A dead voice client must not hide the bot from the people in the channel."""
+    import types
+
+    world = app_bundle.world
+    world.vc.connected = False
+    world.guild.me = types.SimpleNamespace(
+        voice=types.SimpleNamespace(channel=world.channel)
+    )
+
+    response = await app_bundle.client.get(
+        f"/api/state?guild_id={GUILD_ID}", headers=auth_headers(app_bundle.ctx)
+    )
+    assert response.status == 200
+    session = (await response.json())["state"]["session"]
+    assert session["connected"] is False
+    assert session["channel_name"] == "Lounge"
+
+
+async def test_suggestions_are_proxied_and_access_checked(app_bundle, monkeypatch):
+    async def fake_suggest(query, limit=6):
+        return ["daft punk", "daft punk one more time"]
+
+    monkeypatch.setattr(actions, "suggest", fake_suggest)
+
+    response = await app_bundle.client.get(
+        f"/api/suggest?guild_id={GUILD_ID}&q=daft",
+        headers=auth_headers(app_bundle.ctx),
+    )
+    assert response.status == 200
+    assert (await response.json())["suggestions"][0] == "daft punk"
+
+    stranger = auth_headers(
+        app_bundle.ctx, {"id": "99", "username": "stranger", "global_name": "Stranger"}
+    )
+    denied = await app_bundle.client.get(
+        f"/api/suggest?guild_id={GUILD_ID}&q=daft", headers=stranger
+    )
+    assert denied.status == 403
+
+
 # ---------------------------------------------------------------------------
 # Snapshot helpers
 # ---------------------------------------------------------------------------
@@ -521,3 +599,51 @@ def test_keepalive_silence_reports_idle(world: World):
     snapshot = build_snapshot(world.state, session)
     assert snapshot["playback"]["state"] == "keepalive"
     assert snapshot["playback"]["current"] is None
+
+
+# ---------------------------------------------------------------------------
+# Voice health watchdog
+# ---------------------------------------------------------------------------
+
+
+def test_playback_position_matches_the_player_clock(world: World):
+    from src.playify.services.voice_health import playback_position
+
+    world.player.start_time = 12.0
+    world.player.playback_started_at = 1000.0
+    world.player.playback_speed = 0.5
+    assert playback_position(world.player, now=1010.0) == pytest.approx(17.0)
+
+
+def test_voice_channel_prefers_the_gateway_state(world: World):
+    import types
+
+    from src.playify.services.voice_health import voice_channel_of
+
+    other = types.SimpleNamespace(id=99, name="Elsewhere")
+    world.guild.me = types.SimpleNamespace(voice=types.SimpleNamespace(channel=other))
+    assert voice_channel_of(world.guild) is other
+
+
+def test_watchdog_only_heals_missing_connections(world: World):
+    import types
+
+    from src.playify.services.voice_health import _should_heal
+
+    world.player.current_info = {"title": "Song"}
+    world.guild.me = types.SimpleNamespace(
+        voice=types.SimpleNamespace(channel=world.channel)
+    )
+    world.guild.voice_client = world.vc
+
+    # healthy client: nothing to do
+    assert _should_heal(world.guild, world.state, world.player) is False
+
+    # dead client with a track in progress: heal
+    world.vc.connected = False
+    assert _should_heal(world.guild, world.state, world.player) is True
+
+    # bot not in voice at all (kicked): leave it alone
+    world.guild.me = None
+    world.guild.voice_client = None
+    assert _should_heal(world.guild, world.state, world.player) is False

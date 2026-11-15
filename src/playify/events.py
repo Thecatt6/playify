@@ -323,6 +323,15 @@ async def on_ready():
 
         await load_states_on_startup()
 
+        # Voice readiness report + self-healing for dead voice connections.
+        try:
+            from .services.voice_health import log_voice_readiness, start_voice_watchdog
+
+            log_voice_readiness()
+            start_voice_watchdog(bot)
+        except Exception as e:
+            logger.error(f"Failed to start the voice watchdog: {e}", exc_info=True)
+
         # Start the optional Web UI (it stays off until Discord OAuth is configured).
         try:
             from .webui.runtime import start_webui

@@ -30,7 +30,7 @@ Playify has been completely rewritten to provide a seamless, robust, and beautif
 * **Built-in auto-updater**: Keep your bot up to date directly from the dashboard. No `git pull` or manual downloads required.
 * **One-click installer**: Run the setup script and let Playify automatically install Python, download FFmpeg, and set up your `.env` configuration.
 * **In-app settings menu**: Configure your bot's Discord presence, default volumes, and UI customization without touching a text file.
-* **Optional Web UI**: A modern, distraction-free control panel in your browser — songs, queue, seek, filters, 24/7 mode. Locked to the people sitting in the bot's voice channel.
+* **Optional Web UI**: A modern, distraction-free control panel in your browser — songs (YouTube **and** Spotify results in one search), queue, seek, filters, 24/7 mode. Locked to the people sitting in the bot's voice channel.
 
 <p align="center">
   <img src="assets/dashboard_preview.png" alt="Playify TUI Dashboard" width="900">
@@ -57,6 +57,7 @@ Type `/play <url or query>` and let it run.
 * **Direct audio links**: stream any public MP3, FLAC, WAV, or audio URL.
 * **Local file playback**: upload and play your own audio/video files directly.
 * **Autoplay** of similar tracks via YouTube Mix and SoundCloud Stations.
+* **Self-healing voice**: if the voice connection dies while Discord still shows the bot in the channel, Playify rebuilds it by itself and resumes the track where it stopped.
 * **Loop** and **shuffle** queue controls.
 * Audio **filters**: slowed, reverb, bass boost, nightcore, and more.
 </details>
@@ -151,6 +152,8 @@ Playify natively supports Linux with an automated setup script.
 
 ### @ troubleshooting
 
+* **Run the doctor first**: `python tools/doctor.py` checks ffmpeg, PyNaCl, davey, yt-dlp, credentials, the Web UI port and the OAuth redirect in one go.
+* **No audio although the bot is in the channel** - that is almost always a missing `PyNaCl`/`davey`/`ffmpeg`, or a dead ("zombie") voice client. Playify detects both: it prints `VOICE SUPPORT IS NOT READY` when a dependency is missing and repairs dead connections automatically.
 * **FFmpeg not found** - The Windows `start.bat` handles this automatically. For manual setups, ensure FFmpeg 6.1.1 is in your PATH or `bin/` folder.
 * **Spotify errors** - check your `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env`.
 * **Bot offline or unresponsive** - verify your `DISCORD_TOKEN` and bot permissions in the Developer portal.

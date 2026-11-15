@@ -11,10 +11,10 @@ It is **locked down by design**: the only way in is a Discord login, and the bot
 
 * Live "now playing" card with artwork, progress, seek and volume.
 * Full queue management: play a track now, remove it, shuffle, or clear everything.
-* Song search with instant results — or paste any link Playify supports (YouTube, SoundCloud, Spotify, Deezer, Apple Music, Tidal, Amazon Music, Bandcamp, direct audio files).
+* Song search that queries **YouTube and Spotify at the same time** (interleaved results, each with a platform badge), instant query completions, a small in-browser result cache so the box feels instant while you type — or paste any link Playify supports (YouTube, SoundCloud, Spotify, Deezer, Apple Music, Tidal, Amazon Music, Bandcamp, direct audio files).
 * Playback toggles: loop, autoplay, 24/7 mode and audio filters.
 * Server settings for managers (`Manage Server`): default volume and kawaii mode, saved to the database like the slash commands do.
-* Listener avatars, connection health and a `Reconnect` action for a laggy voice connection.
+* Listener avatars, connection health and a `Reconnect` action for a laggy voice connection. If the bot's voice client dies while Discord still shows it in the channel, a red banner explains it and the bot repairs the connection by itself within ~25 seconds.
 * Every change is mirrored to the Discord controller message, so both stay in sync.
 
 :::tip
@@ -151,7 +151,13 @@ The redirect registered in the Discord Developer Portal must match `WEBUI_BASE_U
 <details>
 <summary><b>I stay on "Join Playify's voice channel"</b></summary>
 
-That screen is the access rule working as intended. The bot must be connected to voice; start playback with `/play`, then join that channel. The page unlocks on its own within a few seconds.
+That screen is the access rule working as intended — but the message now tells you *why*:
+
+* *"Playify is not connected to any voice channel"* → start playback with `/play`.
+* *"Playify is listed in #channel but its voice connection is not responding"* → the voice client died; the watchdog rebuilds it within ~25 s, or run `/reconnect`.
+* *"Join the voice channel “X”"* → the bot is in another channel: join X.
+
+The page refreshes by itself, and access is derived from Discord's voice states, so a cold member cache can never lock you out.
 </details>
 
 <details>

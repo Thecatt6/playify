@@ -30,6 +30,7 @@ class VoiceSession:
     listeners: list[dict[str, Any]] = field(default_factory=list)
     member_name: str = ""
     is_manager: bool = False
+    connected: bool = True
     member: Any = field(default=None, repr=False, compare=False)
     voice_client: Any = field(default=None, repr=False, compare=False)
 
@@ -43,6 +44,9 @@ class VoiceSession:
             "listeners": self.listeners,
             "listener_count": len([m for m in self.listeners if not m["bot"]]),
             "is_manager": self.is_manager,
+            # False means the gateway still shows the bot in the channel but its
+            # voice client died ("zombie"): the UI offers a reconnect button.
+            "connected": self.connected,
         }
 
 
@@ -75,7 +79,32 @@ def _member_payload(member: Any) -> dict[str, Any]:
     }
 
 
+def _is_connected(voice_client: Any) -> bool:
+    check = getattr(voice_client, "is_connected", None)
+    try:
+        return bool(check()) if callable(check) else bool(check)
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _bot_voice_channel(guild: Any) -> Any:
+    """Where the *gateway* believes the bot is.
+
+    ``guild.me.voice.channel`` is updated from voice state events, so it stays
+    valid even when the voice client itself is dead (zombie connection). That is
+    the exact situation where the Web UI used to answer "you are not in the
+    channel" while Discord was happily showing the bot in it.
+    """
+    me = getattr(guild, "me", None)
+    voice = getattr(me, "voice", None)
+    channel = getattr(voice, "channel", None)
+    if channel is not None:
+        return channel
+    return getattr(getattr(guild, "voice_client", None), "channel", None)
+
+
 def _connected_voice_clients(bot: Any) -> Iterable[Any]:
+    """Voice clients that still know which channel they belong to."""
     clients = getattr(bot, "voice_clients", None) or []
     try:
         clients = list(clients)
@@ -84,33 +113,71 @@ def _connected_voice_clients(bot: Any) -> Iterable[Any]:
     for vc in clients:
         channel = getattr(vc, "channel", None)
         if channel is None:
-            continue
-        is_connected = getattr(vc, "is_connected", None)
-        if callable(is_connected) and not is_connected():
+            guild = getattr(vc, "guild", None)
+            channel = _bot_voice_channel(guild) if guild is not None else None
+        if channel is None:
             continue
         yield vc
 
 
-def _voice_state_members(channel: Any) -> list[Any]:
-    """Members derived from ``guild.voice_states``.
+def _iter_bot_channels(bot: Any) -> Iterable[tuple[Any, Any, Any]]:
+    """Yield ``(guild, channel, voice_client)`` for every guild the bot is in.
 
-    ``VoiceChannel.members`` relies on the member cache; on large servers with
-    the ``members`` intent disabled some entries can be missing, so the raw
-    voice-state map is used as an extra source of truth.
+    Union of ``bot.voice_clients`` and the gateway voice states, so a single
+    stale object can never hide the bot from the access checks.
+    """
+    seen: set[tuple[Any, Any]] = set()
+
+    for vc in _connected_voice_clients(bot):
+        channel = getattr(vc, "channel", None)
+        guild = getattr(channel, "guild", None) if channel is not None else None
+        if guild is None:
+            guild = getattr(vc, "guild", None)
+            channel = _bot_voice_channel(guild) if guild is not None else None
+        if guild is None or channel is None:
+            continue
+        key = (getattr(guild, "id", None), getattr(channel, "id", None))
+        if key in seen:
+            continue
+        seen.add(key)
+        yield guild, channel, vc
+
+    for guild in getattr(bot, "guilds", None) or []:
+        channel = _bot_voice_channel(guild)
+        if channel is None:
+            continue
+        key = (getattr(guild, "id", None), getattr(channel, "id", None))
+        if key in seen:
+            continue
+        seen.add(key)
+        yield guild, channel, getattr(guild, "voice_client", None)
+
+
+def _voice_state_members(channel: Any) -> list[Any]:
+    """Everyone the gateway reports as connected to ``channel``.
+
+    ``VoiceChannel.members`` relies on the member cache, which can be empty on
+    servers where the ``members`` intent is unavailable. The raw voice state map
+    is authoritative: ``voice_state.member`` may be ``None`` there, so we fall
+    back to ``voice_state.user`` (always present) instead of dropping the entry.
     """
     guild = getattr(channel, "guild", None)
     states = getattr(guild, "voice_states", None)
-    get_member = getattr(guild, "get_member", None)
-    if not isinstance(states, dict) or not callable(get_member):
+    if not isinstance(states, dict):
         return []
 
     channel_id = getattr(channel, "id", None)
+    get_member = getattr(guild, "get_member", None)
     members = []
     for user_id, voice_state in states.items():
         state_channel = getattr(voice_state, "channel", None)
         if state_channel is None or getattr(state_channel, "id", None) != channel_id:
             continue
-        member = get_member(user_id)
+        member = getattr(voice_state, "member", None)
+        if member is None:
+            member = getattr(voice_state, "user", None)
+        if member is None and callable(get_member):
+            member = get_member(user_id)
         if member is not None:
             members.append(member)
     return members
@@ -130,13 +197,26 @@ def _channel_members(channel: Any) -> list[Any]:
 
 
 def _find_member(channel: Any, user_id: int) -> Any:
-    """Return the voice-state member for ``user_id`` if they are in ``channel``."""
+    """Return the member/user for ``user_id`` if they are in ``channel``."""
     for member in _channel_members(channel):
         if getattr(member, "id", None) == user_id:
             return member
 
-    # Fallback: the voice state cache may be incomplete on very large guilds.
+    # Fallback: the member cache may not contain the user at all.
     guild = getattr(channel, "guild", None)
+    states = getattr(guild, "voice_states", None)
+    if isinstance(states, dict):
+        voice_state = states.get(user_id)
+        member_channel = getattr(voice_state, "channel", None) if voice_state else None
+        if member_channel is not None and getattr(member_channel, "id", None) == getattr(
+            channel, "id", None
+        ):
+            member = getattr(voice_state, "member", None) or getattr(
+                voice_state, "user", None
+            )
+            if member is not None:
+                return member
+
     get_member = getattr(guild, "get_member", None)
     if callable(get_member):
         member = get_member(user_id)
@@ -152,15 +232,18 @@ def _find_member(channel: Any, user_id: int) -> Any:
 def resolve_sessions(bot: Any, user_id: int) -> list[VoiceSession]:
     """Every guild where ``user_id`` shares a voice channel with the bot."""
     sessions: list[VoiceSession] = []
-    for vc in _connected_voice_clients(bot):
-        channel = getattr(vc, "channel", None)
-        guild = getattr(channel, "guild", None)
-        if guild is None:
-            continue
-
+    for guild, channel, vc in _iter_bot_channels(bot):
         member = _find_member(channel, user_id)
         if member is None:
             continue
+
+        # Permissions are only available on cached Member objects; fall back to
+        # the guild cache when the voice state gave us a bare User.
+        permissions = getattr(member, "guild_permissions", None)
+        if permissions is None:
+            get_member = getattr(guild, "get_member", None)
+            cached = get_member(user_id) if callable(get_member) else None
+            permissions = getattr(cached, "guild_permissions", None)
 
         guild_id = int(getattr(guild, "id", 0) or 0)
         sessions.append(
@@ -174,9 +257,8 @@ def resolve_sessions(bot: Any, user_id: int) -> list[VoiceSession]:
                     _member_payload(m) for m in _channel_members(channel)
                 ],
                 member_name=_display_name(member),
-                is_manager=bool(
-                    getattr(getattr(member, "guild_permissions", None), "manage_guild", False)
-                ),
+                is_manager=bool(getattr(permissions, "manage_guild", False)),
+                connected=_is_connected(vc),
                 member=member,
                 voice_client=vc,
             )
@@ -196,15 +278,20 @@ def resolve_session(bot: Any, user_id: int, guild_id: int) -> VoiceSession | Non
 def connected_channels(bot: Any) -> list[dict[str, Any]]:
     """Public description of every channel the bot is currently playing in."""
     channels = []
-    for vc in _connected_voice_clients(bot):
-        channel = getattr(vc, "channel", None)
-        guild = getattr(channel, "guild", None)
-        if guild is None:
+    seen: set[Any] = set()
+    for guild, channel, vc in _iter_bot_channels(bot):
+        key = (getattr(guild, "id", None), getattr(channel, "id", None))
+        if key in seen:
             continue
+        seen.add(key)
         channels.append(
             {
+                "guild_id": str(getattr(guild, "id", "")),
                 "guild_name": str(getattr(guild, "name", "Server")),
+                "guild_icon": _asset_url(getattr(guild, "icon", None)),
+                "channel_id": str(getattr(channel, "id", "")),
                 "channel_name": str(getattr(channel, "name", "Voice")),
+                "connected": _is_connected(vc),
             }
         )
     return channels

@@ -13,6 +13,30 @@ If the audio is stuttering in Discord, it is almost **always** a network connect
 1. Try changing the voice channel's region in Discord settings.
 2. If the bot gets stuck in a "zombie state", use the `/reconnect` command.
 
+## The bot is in the voice channel but no audio plays
+
+This has three usual causes, and `python tools/doctor.py` checks all of them at once.
+
+1. **A dependency is missing.** discord.py needs `PyNaCl` to encrypt voice and `davey` to talk in
+   end-to-end encrypted channels, while `ffmpeg` decodes the audio. Look for
+   `PYNACL IS NOT INSTALLED` / `DAVEY IS NOT INSTALLED` in the log at startup, or for
+   `VOICE SUPPORT IS NOT READY` (Playify prints a boxed warning when one of them is missing).
+   ```bash
+   pip install -r requirements.txt
+   sudo apt install -y ffmpeg      # or: apk add ffmpeg on Alpine
+   ```
+2. **The voice connection died "quietly".** Discord keeps showing the bot in the channel while the
+   underlying voice client is already gone: the controller counts down but nothing is audible, and
+   every command complains about the voice channel. Playify now watches for this and rebuilds the
+   connection on its own within ~25 seconds, resuming the track where it stopped. You can force it
+   immediately with `/reconnect`, or from the Web UI with the **Reconnect** button that appears in
+   the red banner.
+3. **Permissions.** The bot needs *Connect* and *Speak* in that channel, and *Use Voice Activity*
+   (or push-to-talk bypass) if the channel enforces it.
+
+If the log says `Voice support ready (ffmpeg=…, PyNaCl=yes, davey=yes)`, the environment is fine and
+the problem is on the Discord side (channel permissions, region, or a muted/deafened bot).
+
 ## How does `/reconnect` work?
 
 Discord's voice connection drops frequently, especially for bots running 24/7.

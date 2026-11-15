@@ -82,6 +82,12 @@
       </div>
     </header>
 
+    <div class="alert-bar" id="connBar" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-alert"/></svg>
+      <span id="connBarText">The voice connection dropped.</span>
+      <button class="btn btn-quiet" id="connBarAction" type="button">Reconnect</button>
+    </div>
+
     <main class="layout">
       <section class="card player" id="playerCard" aria-label="Now playing">
         <div class="art-shell">
