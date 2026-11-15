@@ -98,6 +98,52 @@ def dave_status() -> dict[str, Any]:
     }
 
 
+def dave_runtime_state(voice_client: Any) -> dict[str, Any]:
+    """What the *live* DAVE (E2EE voice) session says.
+
+    Everything is read defensively from discord.py 2.7 internals: a bot that is
+    not encrypting in an encrypted call is heard by nobody, and that is
+    otherwise invisible from the outside.
+    """
+    state: dict[str, Any] = {
+        "protocol": 0,
+        "max_protocol": 0,
+        "session": False,
+        "ready": False,
+        "can_encrypt": False,
+        "privacy_code": None,
+    }
+    connection = getattr(voice_client, "_connection", None)
+    if connection is None:
+        return state
+
+    def read(attribute: str, default: Any = None) -> Any:
+        try:
+            return getattr(connection, attribute, default)
+        except Exception:  # pragma: no cover - discord.py internals
+            return default
+
+    state["protocol"] = read("dave_protocol_version", 0) or 0
+    state["max_protocol"] = read("max_dave_protocol_version", 0) or 0
+    session = read("dave_session", None)
+    state["session"] = session is not None
+    if session is not None:
+        try:
+            state["ready"] = bool(getattr(session, "ready", False))
+        except Exception:  # pragma: no cover - discord.py internals
+            state["ready"] = False
+        try:
+            code = getattr(session, "voice_privacy_code", None)
+            state["privacy_code"] = str(code) if code else None
+        except Exception:  # pragma: no cover - discord.py internals
+            state["privacy_code"] = None
+    try:
+        state["can_encrypt"] = bool(read("can_encrypt", False))
+    except Exception:  # pragma: no cover - discord.py internals
+        state["can_encrypt"] = False
+    return state
+
+
 def voice_dependencies() -> dict[str, Any]:
     """Everything voice playback needs, resolved once."""
     dave = dave_status()

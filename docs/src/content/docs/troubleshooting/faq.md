@@ -26,6 +26,12 @@ Playify now pins `davey>=0.1.6,<0.2` and `/diagnose` reports
 pip install "davey>=0.1.6,<0.2"
 ```
 
+`/diagnose` also reports the live **E2EE (DAVE)** state: `protocol 1/1 · session ready · ✅ encrypting: yes`.
+If it says `encrypting: no` the bot is sending plain audio into an encrypted call and nobody can hear
+it: run `/reconnect`. `python tools/doctor.py` has a **Dependency pins** section that compares what is
+installed with `requirements.txt` and runs `pip check`, so the dependency question is settled by one
+command instead of a guess.
+
 Run **`/diagnose`** in the channel first (or **`!diagnose`** if the slash command has not reached
 your client yet — Discord caches global commands; Playify now also pushes a copy into every server at
 startup and logs the full list as `Slash commands available: …`): it reports the voice connection, the current source, the

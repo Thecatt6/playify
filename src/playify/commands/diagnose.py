@@ -195,6 +195,34 @@ def build_diagnose_embed(guild: discord.Guild, user: Any = None) -> Embed:
                 you += "\n" + ", ".join(flags)
         embed.add_field(name="You", value=you, inline=False)
 
+    # --- E2EE (DAVE) ------------------------------------------------------
+    if voice_client is not None and voice_client.is_connected():
+        from ..services.voice_health import dave_runtime_state
+
+        dave = dave_runtime_state(voice_client)
+        if not dave["protocol"]:
+            e2ee = "off — this channel is not end-to-end encrypted"
+        else:
+            dot = "✅" if dave["can_encrypt"] else "❌"
+            e2ee = (
+                f"protocol {dave['protocol']}/{dave['max_protocol']} · "
+                f"session {'ready' if dave['ready'] else '**not ready**'} · "
+                f"{dot} encrypting: {'yes' if dave['can_encrypt'] else '**no**'}"
+            )
+            if not dave["can_encrypt"]:
+                e2ee += (
+                    "\n⚠️ the bot is sending plain audio into an encrypted call: "
+                    "**nobody can hear it**. Reconnect with `/reconnect`."
+                )
+            if dave.get("privacy_code"):
+                e2ee += f"\nprivacy code: `{dave['privacy_code'][:16]}…`"
+        if dave["protocol"] and not deps.get("dave_compatible", True):
+            e2ee += (
+                f"\n⚠️ davey {deps.get('davey_version')} does not rotate the DAVE keys "
+                "this discord.py expects: listeners cannot decrypt."
+            )
+        embed.add_field(name="E2EE (DAVE)", value=e2ee, inline=False)
+
     # --- playback ---------------------------------------------------------
     info = player.current_info or {}
     if voice_client is not None and voice_client.is_playing():

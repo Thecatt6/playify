@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -265,6 +266,115 @@ def check_webui() -> None:
         )
 
 
+def version_tuple(text: str | None) -> tuple[int, ...]:
+    """``"2.7.1"`` -> ``(2, 7, 1)``; stops at the first non-numeric chunk."""
+    if not text:
+        return ()
+    parts: list[int] = []
+    for chunk in re.split(r"[.\-+]", text):
+        match = re.match(r"\d+", chunk)
+        if not match:
+            break
+        parts.append(int(match.group()))
+    return tuple(parts)
+
+
+def read_requirements() -> dict[str, str]:
+    """``{"davey": ">=0.1.6,<0.2", ...}`` from requirements.txt, comments stripped."""
+    specs: dict[str, str] = {}
+    path = ROOT / "requirements.txt"
+    if not path.exists():
+        return specs
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        text = raw.split("#", 1)[0].strip()
+        if not text or text.startswith("-"):
+            continue
+        match = re.match(r"([A-Za-z0-9_.\-]+)\s*(\[[^\]]*\])?\s*(.*)$", text)
+        if not match:
+            continue
+        specs[match.group(1).lower()] = match.group(3).strip()
+    return specs
+
+
+def satisfies(version: str | None, spec: str) -> bool | None:
+    """Does ``version`` satisfy a pip specifier? ``None`` when it cannot be parsed."""
+    installed = version_tuple(version)
+    if not installed:
+        return None
+    for clause in spec.split(","):
+        clause = clause.strip()
+        if not clause:
+            continue
+        match = re.match(r"(>=|<=|==|!=|~=|>|<)\s*([0-9][0-9A-Za-z.\-+]*)", clause)
+        if not match:
+            return None
+        operator, wanted_text = match.group(1), match.group(2)
+        wanted = version_tuple(wanted_text)
+        if not wanted:
+            return None
+        padded = installed + (0,) * max(0, len(wanted) - len(installed))
+        wanted_padded = wanted + (0,) * max(0, len(installed) - len(wanted))
+        if operator == ">=" and not padded >= wanted_padded:
+            return False
+        if operator == "<=" and not padded <= wanted_padded:
+            return False
+        if operator == ">" and not padded > wanted_padded:
+            return False
+        if operator == "<" and not padded < wanted_padded:
+            return False
+        if operator == "==" and padded != wanted_padded:
+            return False
+        if operator == "!=" and padded == wanted_padded:
+            return False
+        if operator == "~=" and not (padded >= wanted_padded and padded[: len(wanted)] == wanted):
+            return False
+    return True
+
+
+def check_pins() -> None:
+    """Installed versions against the pins in requirements.txt, plus pip check."""
+    section("Dependency pins")
+    specs = read_requirements()
+    critical = [
+        ("discord.py", "discord.py"),
+        ("davey", "davey"),
+        ("pynacl", "PyNaCl"),
+        ("yt-dlp", "yt-dlp"),
+        ("aiohttp", "aiohttp"),
+    ]
+    for dist, dist_metadata_name in critical:
+        spec = specs.get(dist, "")
+        installed = package_version(dist_metadata_name)
+        if not installed:
+            line(FAIL, f"{dist_metadata_name} is not installed", "pip install -r requirements.txt")
+            continue
+        verdict = satisfies(installed, spec) if spec else True
+        if verdict is False:
+            line(
+                FAIL,
+                f"{dist_metadata_name} {installed} does not satisfy '{dist}{spec}'",
+                "pip install -r requirements.txt",
+            )
+        else:
+            line(OK, f"{dist_metadata_name} {installed} ({spec or 'unpinned'})")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "check"],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except Exception as error:  # pragma: no cover - pip missing
+        line(WARN, f"could not run 'pip check' ({type(error).__name__})")
+        return
+    output = (result.stdout or "").strip()
+    if result.returncode == 0:
+        line(OK, "pip check: no broken or conflicting requirements")
+    else:
+        line(FAIL, "pip check found problems", output or result.stderr.strip())
+
+
 def check_install() -> None:
     section("Installation")
     for name, dist in (
@@ -293,6 +403,7 @@ def main() -> int:
     check_voice()
     check_environment()
     check_webui()
+    check_pins()
     check_install()
 
     print()

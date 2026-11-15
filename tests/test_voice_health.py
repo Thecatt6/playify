@@ -231,3 +231,62 @@ def test_version_tuple_stops_at_non_numeric_chunks():
     assert voice_health._version_tuple("2.7.1") == (2, 7, 1)
     assert voice_health._version_tuple("0.2.0rc1") == (0, 2, 0)
     assert voice_health._version_tuple(None) == ()
+
+
+class _FakeDaveSession:
+    def __init__(self, ready: bool, code: str | None = "abc123"):
+        self.ready = ready
+        self.voice_privacy_code = code
+
+
+class _FakeConnection:
+    def __init__(self, protocol=1, session=None, can_encrypt=True):
+        self.dave_protocol_version = protocol
+        self.max_dave_protocol_version = 1
+        self.dave_session = session
+        self._can_encrypt = can_encrypt
+
+    @property
+    def can_encrypt(self):
+        return self._can_encrypt
+
+
+def test_dave_runtime_state_reports_an_encrypted_call():
+    voice_client = types.SimpleNamespace(
+        _connection=_FakeConnection(protocol=1, session=_FakeDaveSession(True))
+    )
+
+    state = voice_health.dave_runtime_state(voice_client)
+
+    assert state["protocol"] == 1
+    assert state["session"] is True and state["ready"] is True
+    assert state["can_encrypt"] is True
+    assert state["privacy_code"] == "abc123"
+
+
+def test_dave_runtime_state_flags_plain_audio_in_an_encrypted_call():
+    voice_client = types.SimpleNamespace(
+        _connection=_FakeConnection(protocol=1, session=_FakeDaveSession(False), can_encrypt=False)
+    )
+
+    state = voice_health.dave_runtime_state(voice_client)
+
+    assert state["protocol"] == 1
+    assert state["can_encrypt"] is False
+    assert state["ready"] is False
+
+
+def test_dave_runtime_state_survives_broken_internals():
+    class Exploding:
+        @property
+        def can_encrypt(self):
+            raise RuntimeError("internals moved")
+
+        dave_protocol_version = 0
+        dave_session = None
+
+    state = voice_health.dave_runtime_state(types.SimpleNamespace(_connection=Exploding()))
+
+    assert state["protocol"] == 0
+    assert state["can_encrypt"] is False
+    assert voice_health.dave_runtime_state(types.SimpleNamespace())["protocol"] == 0
