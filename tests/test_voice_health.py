@@ -189,3 +189,45 @@ def test_readiness_reports_missing_dependencies(monkeypatch):
     assert any("PyNaCl" in problem for problem in problems)
     assert any("davey" in problem for problem in problems)
     assert voice_health.log_voice_readiness() is False
+
+
+def test_davey_0_2_with_discord_py_2_7_is_reported_as_silent(monkeypatch):
+    """davey 0.2 rotates DAVE keys in a way discord.py 2.7 never triggers.
+
+    The symptom is the worst kind: the bot connects, plays, and every listener
+    hears silence because the audio cannot be decrypted.
+    """
+    versions = {"davey": "0.2.0", "discord.py": "2.7.1"}
+    monkeypatch.setattr(voice_health, "_module_version", lambda name: versions.get(name))
+    monkeypatch.setattr(voice_health, "_has_module", lambda name: True)
+    monkeypatch.setattr(
+        voice_health, "shutil", types.SimpleNamespace(which=lambda name: "/usr/bin/ffmpeg")
+    )
+
+    status = voice_health.dave_status()
+
+    assert status["compatible"] is False
+    assert "0.2.0" in status["reason"]
+    assert "nobody hears it" in status["reason"]
+    problems = voice_health.voice_readiness_problems()
+    assert any("davey" in problem and "nobody hears" in problem for problem in problems), problems
+
+
+def test_davey_0_1_is_compatible(monkeypatch):
+    versions = {"davey": "0.1.7", "discord.py": "2.7.1"}
+    monkeypatch.setattr(voice_health, "_module_version", lambda name: versions.get(name))
+
+    assert voice_health.dave_status()["compatible"] is True
+
+
+def test_discord_py_with_transition_support_accepts_davey_0_2(monkeypatch):
+    versions = {"davey": "0.2.0", "discord.py": "2.8.0"}
+    monkeypatch.setattr(voice_health, "_module_version", lambda name: versions.get(name))
+
+    assert voice_health.dave_status()["compatible"] is True
+
+
+def test_version_tuple_stops_at_non_numeric_chunks():
+    assert voice_health._version_tuple("2.7.1") == (2, 7, 1)
+    assert voice_health._version_tuple("0.2.0rc1") == (0, 2, 0)
+    assert voice_health._version_tuple(None) == ()

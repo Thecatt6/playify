@@ -121,7 +121,16 @@ def check_voice() -> None:
         )
 
     if module_present("davey"):
-        line(OK, f"davey {package_version('davey') or ''}".strip())
+        davey_version = package_version("davey") or "?"
+        if davey_version.startswith("0.2") or davey_version.startswith("1."):
+            line(
+                FAIL,
+                f"davey {davey_version} cannot rotate DAVE keys with discord.py "
+                f"{package_version('discord.py') or '?'} → the bot plays and nobody hears it",
+                'pip install "davey>=0.1.6,<0.2"',
+            )
+        else:
+            line(OK, f"davey {davey_version}")
     else:
         line(
             FAIL,

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import re
 import shutil
 import time
 from typing import Any
@@ -45,12 +46,68 @@ def _has_module(name: str) -> bool:
         return False
 
 
+def _module_version(distribution: str) -> str | None:
+    """Installed version of a distribution, or ``None`` when it is absent."""
+    try:
+        from importlib.metadata import version
+
+        return version(distribution)
+    except Exception:  # pragma: no cover - broken/partial installs
+        return None
+
+
+def _version_tuple(text: str | None) -> tuple[int, ...]:
+    """``"2.7.1"`` -> ``(2, 7, 1)``; stops at the first non-numeric chunk."""
+    if not text:
+        return ()
+    parts: list[int] = []
+    for chunk in re.split(r"[.\-+]", text):
+        match = re.match(r"\d+", chunk)
+        if not match:
+            break
+        parts.append(int(match.group()))
+    return tuple(parts)
+
+
+def dave_status() -> dict[str, Any]:
+    """Whether the installed ``davey`` can talk to the installed discord.py.
+
+    ``davey`` 0.2 (2026-11-02) changed how DAVE encryption keys are rotated: the
+    key switch now needs ``prepare_transition()`` / ``execute_transition()``,
+    which discord.py 2.7.x never calls. The bot keeps playing, the green
+    speaking ring lights up, and every listener hears silence because they
+    cannot decrypt the audio.
+    """
+    davey = _module_version("davey")
+    discord_py = _module_version("discord.py")
+    compatible = True
+    reason = None
+    if davey and _version_tuple(davey) >= (0, 2):
+        if not discord_py or _version_tuple(discord_py) < (2, 8):
+            compatible = False
+            reason = (
+                f"davey {davey} with discord.py {discord_py or '?'} cannot rotate "
+                "DAVE keys: listeners cannot decrypt the audio (the bot plays, "
+                "nobody hears it). Pin davey below 0.2."
+            )
+    return {
+        "davey": davey,
+        "discord_py": discord_py,
+        "compatible": compatible,
+        "reason": reason,
+    }
+
+
 def voice_dependencies() -> dict[str, Any]:
     """Everything voice playback needs, resolved once."""
+    dave = dave_status()
     return {
         "ffmpeg": shutil.which("ffmpeg"),
         "pynacl": _has_module("nacl"),
         "davey": _has_module("davey"),
+        "davey_version": dave["davey"],
+        "discord_py_version": dave["discord_py"],
+        "dave_compatible": dave["compatible"],
         "yt_dlp": _has_module("yt_dlp"),
     }
 
@@ -70,6 +127,12 @@ def voice_readiness_problems() -> list[str]:
     if not deps["davey"]:
         problems.append(
             "davey is missing: voice does not work on E2EE channels (pip install davey)"
+        )
+    elif not deps.get("dave_compatible", True):
+        problems.append(
+            f"davey {deps.get('davey_version')} breaks DAVE encryption with discord.py "
+            f"{deps.get('discord_py_version') or '?'}: the bot plays but nobody hears it "
+            '(pip install "davey>=0.1.6,<0.2")'
         )
     return problems
 

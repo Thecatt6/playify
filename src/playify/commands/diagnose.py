@@ -242,21 +242,35 @@ def build_diagnose_embed(guild: discord.Guild, user: Any = None) -> Embed:
 
     # --- dependencies -----------------------------------------------------
     ffmpeg = deps.get("ffmpeg")
+    davey_version = deps.get("davey_version")
+    if not deps.get("davey"):
+        davey_line = "❌ missing (E2EE channels need it)"
+    elif deps.get("dave_compatible", True):
+        davey_line = f"✅ {davey_version or 'installed'}"
+    else:
+        davey_line = (
+            f"❌ {davey_version} — cannot rotate DAVE keys with discord.py "
+            f"{deps.get('discord_py_version') or '?'}: **every listener hears silence**"
+        )
     lines = [
         f"ffmpeg: {'✅ ' + str(ffmpeg) if ffmpeg else '❌ not found in PATH'}",
         f"PyNaCl: {'✅ installed' if deps.get('pynacl') else '❌ missing'}",
-        f"davey: {'✅ installed' if deps.get('davey') else '❌ missing (E2EE channels need it)'}",
+        "davey (E2EE voice): " + davey_line,
         f"yt-dlp: {'✅ installed' if deps.get('yt_dlp') else '❌ missing'}",
+        f"discord.py: {deps.get('discord_py_version') or 'unknown'}",
     ]
     embed.add_field(name="Dependencies", value="\n".join(lines), inline=False)
 
     if problems:
-        embed.add_field(
-            name="Fix",
-            value="\n".join(f"• {problem}" for problem in problems)
-            + "\n```\npip install -r requirements.txt\n```",
-            inline=False,
-        )
+        fix = "\n".join(f"• {problem}" for problem in problems)
+        if not deps.get("dave_compatible", True):
+            fix += '\n```\npip install "davey>=0.1.6,<0.2"\n```'
+        else:
+            fix += "\n```\npip install -r requirements.txt\n```"
+        embed.add_field(name="Fix", value=fix, inline=False)
+
+    if not deps.get("dave_compatible", True):
+        embed.color = discord.Color.red()
 
     embed.set_footer(
         text="Everything ✅ but still quiet? Right-click the bot in the voice channel "

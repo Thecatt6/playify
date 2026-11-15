@@ -15,6 +15,17 @@ If the audio is stuttering in Discord, it is almost **always** a network connect
 
 ## The bot is in the voice channel but no audio plays
 
+**Fastest check: does the bot's avatar show the green speaking ring while nobody hears anything?**
+If yes, the audio leaves the bot but cannot be decrypted by the listeners, and since 2 November 2026
+the usual cause is **`davey` 0.2**: it moved DAVE (Discord's end-to-end voice encryption) key
+rotation to `prepare_transition()` / `execute_transition()`, which discord.py 2.7.x never calls.
+Playify now pins `davey>=0.1.6,<0.2` and `/diagnose` reports
+`davey ❌ 0.2.0 — cannot rotate DAVE keys…` in that case:
+
+```bash
+pip install "davey>=0.1.6,<0.2"
+```
+
 Run **`/diagnose`** in the channel first (or **`!diagnose`** if the slash command has not reached
 your client yet — Discord caches global commands; Playify now also pushes a copy into every server at
 startup and logs the full list as `Slash commands available: …`): it reports the voice connection, the current source, the

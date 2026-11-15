@@ -1,7 +1,10 @@
 # Core Discord library and voice dependency
-discord.py
+# 2.7 is the first release with DAVE support: older versions cannot speak at all.
+discord.py>=2.7,<2.8
 PyNaCl
-davey
+# davey 0.2 (2026-11-02) moved DAVE key rotation to prepare/execute_transition,
+# which discord.py 2.7.x does not call: the bot plays and nobody hears it.
+davey>=0.1.6,<0.2
 
 # Audio/Video downloading
 yt-dlp
