@@ -112,7 +112,7 @@ def pin_problems(
     for dist, spec in specs.items():
         installed = lookup(dist)
         if installed is None:
-            problems.append(f"{dist} is pinned in requirements.txt but not installed")
+            problems.append(f"{dist} is in requirements.txt but is not installed")
             continue
         verdict = satisfies(installed, spec) if spec else None
         if verdict is False:
