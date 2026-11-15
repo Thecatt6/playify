@@ -18,7 +18,7 @@ It is **locked down by design**: the only way in is a Discord login, and the bot
 * Every change is mirrored to the Discord controller message, so both stay in sync.
 
 :::tip
-Run `/webui` in Discord to get the link without leaving the app.
+There are two ways to open it: the **🌐 Web UI** button on the player controller (it appears automatically next to *Lyrics / Karaoke / Show Queue / Jump to…* once the interface is running), or the `/webui` slash command, which replies privately with the link.
 :::
 
 ## 1. Create the OAuth credentials
@@ -58,7 +58,9 @@ If OAuth credentials are missing, the bot keeps running normally and simply skip
 
 ## 3. Use it
 
-Open `WEBUI_BASE_URL`, sign in with Discord and join the voice channel where Playify is playing. The page unlocks automatically (it polls every few seconds); no refresh needed.
+Open `WEBUI_BASE_URL` (or press the **Web UI** button under the player controller), sign in with Discord and join the voice channel where Playify is playing. The page unlocks automatically (it polls every few seconds); no refresh needed.
+
+If you use a reverse proxy and change the public URL later, remember to update `WEBUI_BASE_URL`: the controller button and `/webui` both use it.
 
 ## How access control works
 

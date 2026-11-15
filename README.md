@@ -94,7 +94,7 @@ DISCORD_CLIENT_ID=your_client_id
 DISCORD_CLIENT_SECRET=your_client_secret
 ```
 
-Add `https://music.example.com/auth/callback` to your application's OAuth2 redirects, restart the bot, then open the URL or type `/webui` in Discord.
+Add `https://music.example.com/auth/callback` to your application's OAuth2 redirects and restart the bot. You can then open the URL directly, press the **🌐 Web UI** button on the player controller, or use `/webui`.
 
 <p align="center">
   <em>Full setup guide (OAuth, reverse proxy, Docker): <a href="https://alan7383.github.io/playify/configuration/web-ui/">Web UI documentation</a></em>

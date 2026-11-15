@@ -459,6 +459,7 @@ controller:
     karaoke: "Karaoke (*o*)"
     queue: "Show Queue ._."
     jump_to: "Jump to... ⤷"
+    webui: "Web UI !~"
     vol_down: "Vol-"
     vol_up: "Vol+"
 
