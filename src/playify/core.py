@@ -573,6 +573,14 @@ async def load_states_on_startup():
                 state._24_7_mode = row["is_24_7"]
                 player.autoplay_enabled = row["autoplay"]
                 player.volume = row["volume"]
+                if not player.volume or float(player.volume) < 0.02:
+                    # A zero volume survives restarts, and looks exactly like "no
+                    # audio" from Discord's side: say it out loud at boot.
+                    logger.warning(
+                        f"[{guild_id}] Restored volume is {float(player.volume or 0) * 100:.0f}% "
+                        "from the database: playback will be inaudible until it is raised "
+                        "with /volume or the Web UI slider."
+                    )
                 try:
                     state.default_volume = row["default_volume"]
                 except (IndexError, KeyError):
