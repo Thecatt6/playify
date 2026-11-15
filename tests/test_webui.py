@@ -748,6 +748,78 @@ def test_position_interpolation_uses_playback_speed(world: World):
     assert snapshot["playback"]["position"] == pytest.approx(32.0)
 
 
+def test_a_finished_track_stops_counting(world: World):
+    """The panel must not keep adding time once the track is over."""
+    player = world.player
+    player.current_info = {"title": "Song", "duration": 200}
+    player.start_time = 0.0
+    player.playback_started_at = 1000.0  # ten minutes ago
+    world.vc._playing = False
+    world.vc._paused = False
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+    snapshot = build_snapshot(world.state, session, now=1600.0)
+
+    assert snapshot["playback"]["state"] == "idle"
+    assert snapshot["playback"]["position"] == 0.0
+
+
+def test_nothing_playing_reports_no_elapsed_time(world: World):
+    player = world.player
+    player.current_info = None
+    player.start_time = 0.0
+    player.playback_started_at = 1000.0
+    world.vc._playing = False
+    world.vc._paused = False
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+    snapshot = build_snapshot(world.state, session, now=1600.0)
+
+    assert snapshot["playback"]["state"] == "idle"
+    assert snapshot["playback"]["position"] == 0.0
+
+
+def test_a_playing_track_stops_at_its_duration(world: World):
+    player = world.player
+    player.current_info = {"title": "Song", "duration": 180}
+    player.start_time = 0.0
+    player.playback_started_at = 1000.0
+    world.vc._playing = True
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+    snapshot = build_snapshot(world.state, session, now=1600.0)
+
+    assert snapshot["playback"]["state"] == "playing"
+    assert snapshot["playback"]["position"] == 180.0
+
+
+def test_a_paused_track_keeps_the_position_it_reached(world: World):
+    player = world.player
+    player.current_info = {"title": "Song", "duration": 300}
+    player.start_time = 42.0
+    player.playback_started_at = None
+    world.vc._playing = False
+    world.vc._paused = True
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": world.vc})()
+    snapshot = build_snapshot(world.state, session, now=1600.0)
+
+    assert snapshot["playback"]["state"] == "paused"
+    assert snapshot["playback"]["position"] == 42.0
+
+
+def test_the_snapshot_prefers_the_players_voice_client(world: World):
+    stale = type("VC", (), {"is_playing": lambda self: False, "is_paused": lambda self: False})()
+    world.player.current_info = {"title": "Song", "duration": 100}
+    world.player.playback_started_at = 1000.0
+    world.vc._playing = True
+
+    session = type("Session", (), {"public": lambda self: {}, "voice_client": stale})()
+    snapshot = build_snapshot(world.state, session, now=1010.0)
+
+    assert snapshot["playback"]["state"] == "playing"
+
+
 def test_keepalive_silence_reports_idle(world: World):
     world.player.is_playing_silence = True
     world.vc._playing = True

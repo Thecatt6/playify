@@ -144,6 +144,7 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
             logger.info(
                 f"[{guild_id}] after_playing: Voice client disconnected, stopping playback loop."
             )
+            music_player.stop_clock()
             return
         if music_player.is_reconnecting:
             return
@@ -396,6 +397,9 @@ async def play_audio(guild_id, seek_time=0, is_a_loop=False, song_that_just_ende
                 if music_player.queue.empty():
                     logger.info(f"[{guild_id}] Queue is empty, stopping playback.")
                     music_player.current_task = None
+                    # Nothing is playing any more: stop the clock, otherwise the
+                    # panel keeps counting past the end of the last track.
+                    music_player.stop_clock()
                     bot.loop.create_task(update_controller(bot, guild_id))
                     if not get_guild_state(guild_id)._24_7_mode:
                         await asyncio.sleep(60)

@@ -272,6 +272,33 @@ async function mainScenario() {
     JSON.stringify(lastAction())
   );
 
+  console.log("\n[the clock]");
+  const idle = { ...snapshot(), playback: { ...snapshot().playback, state: "idle", current: null, position: 0 } };
+  sockets[0].push({ type: "state", data: idle });
+  await wait(120);
+  const frozen = $("pos").textContent;
+  await wait(220);
+  check("a finished track shows 0:00", frozen === "0:00", frozen);
+  check("the timer does not run when nothing plays", $("pos").textContent === frozen, $("pos").textContent);
+
+  const nearlyOver = {
+    ...snapshot(),
+    playback: { ...snapshot().playback, state: "playing", position: 119.5 },
+    settings: snapshot().settings,
+  };
+  nearlyOver.playback.current = { ...snapshot().playback.current, duration: 120 };
+  sockets[0].push({ type: "state", data: nearlyOver });
+  await wait(80);
+  await wait(900);
+  check(
+    "the timer stops at the end of the track",
+    $("pos").textContent === "2:00",
+    $("pos").textContent
+  );
+
+  sockets[0].push({ type: "state", data: snapshot() });
+  await wait(60);
+
   console.log("\n[queue drag and drop]");
   const queueSnapshot = (titles) => ({
     ...snapshot(),

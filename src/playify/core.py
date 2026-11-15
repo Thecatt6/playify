@@ -394,12 +394,26 @@ class MusicPlayer:
         self.is_playing_silence = False
         self.is_resuming_after_silence = False
         self.volume = initial_volume
+        self.stop_clock()
+
         self.controller_message_id = None
         self.duration_hydration_lock = asyncio.Lock()
         self.queue_lock = asyncio.Lock()
         self.silence_management_lock = asyncio.Lock()
         self.is_paused_by_leave = False
         self.manual_stop = False
+
+    def stop_clock(self) -> None:
+        """Freeze the progress clock.
+
+        Without this a finished track keeps "playing" for the UI: the panel and
+        the controller add ``now - playback_started_at`` to ``start_time`` and
+        never stop, so the timer runs past the end of the song. It also poisoned
+        the saved playback state, which is why a restart could resume at an
+        impossible timestamp.
+        """
+        self.start_time = 0.0
+        self.playback_started_at = None
 
     async def hydrate_track_info(self, track_info: dict) -> dict:
         """
